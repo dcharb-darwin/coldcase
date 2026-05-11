@@ -49,7 +49,10 @@ def _format_ai_programs(report: Report) -> str:
 
 
 def _draw_footer(canvas, doc, report: Report):
-    """§13663(a)(1) compliance — the statutory disclosure renders on every page."""
+    """§13663(a)(1) compliance — the statutory disclosure renders on every page,
+    plus a machine- and human-readable Document ID stripe so an auditor with
+    just the PDF can resolve back to the Cold Case audit chain
+    (GET /audit/reports/{report_id}/chain)."""
     canvas.saveState()
     canvas.setStrokeColor(colors.black)
     canvas.setLineWidth(0.5)
@@ -63,8 +66,22 @@ def _draw_footer(canvas, doc, report: Report):
         0.75 * inch, 0.36 * inch,
         f"AI program(s) used: {_format_ai_programs(report)}",
     )
+
+    # Document-identity stripe: Report ID + Case # + signed-revision hash prefix.
+    # Lets an auditor with only the PDF reach the full chain via:
+    #   GET /launchpad/coldcase/api/audit/reports/<report_id>/chain
+    case_number = report.case.case_number if report.case else "—"
+    sig_prefix = (
+        report.signature.content_sha256[:12] + "…"
+        if report.signature and report.signature.content_sha256 else "unsigned"
+    )
+    canvas.setFont("Helvetica-Oblique", 7)
+    canvas.drawString(
+        0.75 * inch, 0.22 * inch,
+        f"Cold Case Report {report.id} · Case {case_number} · signed-rev sha {sig_prefix}",
+    )
     canvas.drawRightString(
-        LETTER[0] - 0.75 * inch, 0.36 * inch,
+        LETTER[0] - 0.75 * inch, 0.22 * inch,
         f"Page {doc.page}",
     )
     canvas.restoreState()
@@ -108,10 +125,28 @@ def export_report_pdf(report: Report, *, output_dir: str | None = None) -> str:
         spaceBefore=4, spaceAfter=12,
     )
 
+    # PDF metadata — Title/Author/Subject/Keywords flow into the document's
+    # XMP/Info dictionary so evidence.com (and any other DMS) can auto-index
+    # by Report ID + Case # without re-OCRing the artifact.
+    case_number = report.case.case_number if report.case else ""
+    signer = report.signature.display_name or report.signature.user_id
     doc = SimpleDocTemplate(
         path, pagesize=LETTER,
         leftMargin=0.75 * inch, rightMargin=0.75 * inch,
         topMargin=0.75 * inch, bottomMargin=1.0 * inch,
+        title=f"{report.title} (Cold Case Report {report.id})",
+        author=signer,
+        subject=f"Cold Case Report — {case_number} · Penal Code §13663 AI-assisted official report",
+        keywords=", ".join([
+            f"report_id={report.id}",
+            f"case_number={case_number}",
+            f"content_sha256={report.signature.content_sha256}",
+            "cold-case",
+            "ai-assisted",
+            "penal-code-13663",
+        ]),
+        creator="Cold Case (Darwin Launchpad)",
+        producer="Cold Case · ReportLab",
     )
     story = []
 
@@ -124,6 +159,35 @@ def export_report_pdf(report: Report, *, output_dir: str | None = None) -> str:
         f"AI program(s) used: {_format_ai_programs(report)}",
         disclosure_box,
     ))
+
+    # ── Document identifiers ───────────────────────────────────────────────
+    # Lets an auditor with only the PDF resolve back to the Cold Case audit
+    # chain endpoint that surfaces every prompt, response, document, and
+    # revision that produced this report.
+    story.append(Paragraph("Document identifiers", h2))
+    ident_rows = [
+        ["Report ID:", str(report.id)],
+        ["Case number:", case_number or "—"],
+        ["First AI draft (message id):", report.first_ai_draft_message_id or "—"],
+        ["Conversation id:", str(report.conversation.id) if report.conversation else "—"],
+        ["Signed-content sha256:", report.signature.content_sha256],
+        ["Audit chain (relative):", f"/launchpad/coldcase/api/audit/reports/{report.id}/chain"],
+    ]
+    ident_table = Table(ident_rows, colWidths=[2.0 * inch, 4.4 * inch])
+    ident_table.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#f3f4f6")),
+        ("BOX", (0, 0), (-1, -1), 0.4, colors.grey),
+        ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+    ]))
+    story.append(ident_table)
+    story.append(Spacer(1, 12))
 
     # ── Body ───────────────────────────────────────────────────────────────
     story.append(Paragraph("Report", h2))
