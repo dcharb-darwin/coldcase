@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from typing import Optional
 
@@ -12,7 +13,7 @@ from models import (
     Case, Conversation, Message, MessageRole, Document, MediaInput,
 )
 from models.audit_event import AuditEventType
-from providers.llm import get_llm_provider
+from providers.llm import AttachedFile, get_llm_provider
 from routers._deps import CurrentUser, current_user
 from services import case_audit
 from services.document_text import extract_text, number_lines
@@ -106,7 +107,7 @@ def _detect_refusal(content: str) -> bool:
     return any(p in lo for p in _REFUSAL_PHRASES)
 
 
-CITATION_INSTRUCTIONS = """\
+CITATION_INSTRUCTIONS_INLINE_TEXT = """\
 === DOCUMENT ACCESS — READ THIS BEFORE RESPONDING ===
 
 The documents listed below appear between `--- BEGIN DOCUMENT: <filename> ---`
@@ -131,29 +132,89 @@ the EXACT form:
 
 - <filename> must match exactly one of the document filenames listed below.
 - L<line> must reference a line number that appears as [L<n>] in the document text.
-- Cite the most specific line that supports the claim. If a claim spans
-  multiple lines, cite the first relevant line.
-- Multiple citations for one claim are allowed, separated by spaces:
-    [src: patrol-report-92-04-1107.pdf, L17] [src: me-preliminary-92-04-1107.pdf, L22]
-- DO NOT cite media inputs (you don't have their contents in this prompt).
+- Cite the most specific line that supports the claim.
+- Multiple citations allowed, space-separated.
+- DO NOT cite media inputs.
 - DO NOT invent line numbers. If you can't find a supporting line, say so
-  in the response and DO NOT emit a citation for that claim.
-- If your response is a list (e.g. a timeline), put the citation at the END
-  of each item.
+  and emit no citation for that claim.
 
-Examples of correctly-cited factual claims:
-
-  - Body discovered at Riverside Park north boat launch at 06:18 hrs [src: patrol-report-92-04-1107.pdf, L7]
-  - Decedent worked the 5pm-1am shift on 04/11/1992 [src: detective-supp-92-04-1107.pdf, L11]
-  - Cause of death was blunt-force trauma to the occipital skull [src: me-preliminary-92-04-1107.pdf, L9]
-
-Inferences vs facts: prefix inferred statements with "[inferred] " and DO NOT
-emit a citation for them. Example:
-  - [inferred] The keyring on the beach likely fell from the decedent's hand during the assault.
+Inferences vs facts: prefix inferred statements with "[inferred] " and emit
+no citation for them.
 """
 
 
-def _build_system_prompt(case: Case, documents_in_context: list[Document], media_in_context: list[MediaInput]) -> str:
+CITATION_INSTRUCTIONS_MULTIMODAL = """\
+=== DOCUMENT ACCESS — YOU HAVE THE FILES ATTACHED ===
+
+The PDF files attached to this message are the primary source of fact. Read
+them directly — including scanned pages, the model sees image content
+natively. You may not respond with phrases like "I do not have access,"
+"no extractable content," or "please provide the documents" — the files
+are attached.
+
+=== CITATION REQUIREMENTS — MANDATORY ===
+
+Every factual claim in your response MUST be followed by a citation token of
+the EXACT form:
+
+  [src: <filename>, p<page>, "<short verbatim quote from the page>"]
+
+- <filename> matches exactly one of the attached files' filenames.
+- <page> is the 1-indexed page number where the supporting text appears.
+- The quote must be a SHORT verbatim fragment (5-15 words) copied exactly
+  as it appears on that page. The quote is what an auditor will search for
+  in the source PDF to verify your claim — paraphrases break verification.
+- Multiple citations allowed, space-separated.
+- DO NOT invent page numbers or quotes. If you can't find a supporting
+  passage, say so and emit no citation for that claim.
+
+Examples of correctly-cited factual claims:
+
+  - Body discovered at Riverside Park north boat launch at 06:18 hrs
+    [src: patrol-report.pdf, p1, "At 06:18 hrs on 04/12/1992 dispatch received"]
+  - Cause of death was blunt-force trauma to the occipital skull
+    [src: me-preliminary.pdf, p1, "blunt-force trauma to the posterior cranium"]
+
+Inferences vs facts: prefix inferred statements with "[inferred] " and emit
+no citation for them.
+"""
+
+
+# Default to the inline-text instructions; conversations router swaps to the
+# multimodal variant when the active LLM provider supports attachments AND
+# COLDCASE_LLM_MULTIMODAL is enabled.
+CITATION_INSTRUCTIONS = CITATION_INSTRUCTIONS_INLINE_TEXT
+
+
+_MULTIMODAL_ENABLED = os.environ.get("COLDCASE_LLM_MULTIMODAL", "false").lower() in ("1", "true", "yes")
+
+
+def _build_attachments(documents: list[Document]) -> list[AttachedFile]:
+    """Read each Document's bytes from the storage provider and wrap as an
+    AttachedFile. Bytes live only for the request's stack frame — never
+    persisted by Cold Case (PRD business rule #17, data residency)."""
+    from providers.document_storage import get_document_storage_provider
+    storage = get_document_storage_provider()
+    out: list[AttachedFile] = []
+    for d in documents:
+        path = storage.resolve_path(d.storage_uri)
+        with open(path, "rb") as f:
+            data = f.read()
+        out.append(AttachedFile(
+            filename=d.original_filename,
+            mime_type=d.mime_type or "application/pdf",
+            data=data,
+        ))
+    return out
+
+
+def _build_system_prompt(
+    case: Case,
+    documents_in_context: list[Document],
+    media_in_context: list[MediaInput],
+    *,
+    multimodal: bool,
+) -> str:
     parts = [
         "You are an AI assistant supporting a law enforcement detective on a cold case.",
         f"Case number: {case.case_number}. Title: {case.title}. Classification: {case.classification}.",
@@ -163,15 +224,21 @@ def _build_system_prompt(case: Case, documents_in_context: list[Document], media
     ]
     if documents_in_context:
         parts.append("")
-        parts.append(CITATION_INSTRUCTIONS)
-        parts.append("=== DOCUMENTS IN CONTEXT (with [L<n>] line anchors) ===")
-        for d in documents_in_context:
-            text = extract_text(d)
-            numbered = number_lines(text) if text else "[document text could not be extracted — only the filename is known]"
-            parts.append("")
-            parts.append(f"--- BEGIN DOCUMENT: {d.original_filename} (sha256={d.sha256[:12]}…) ---")
-            parts.append(numbered)
-            parts.append(f"--- END DOCUMENT: {d.original_filename} ---")
+        if multimodal:
+            parts.append(CITATION_INSTRUCTIONS_MULTIMODAL)
+            parts.append("=== ATTACHED FILES ===")
+            for d in documents_in_context:
+                parts.append(f"- {d.original_filename} (sha256={d.sha256[:12]}…) — attached above as a PDF")
+        else:
+            parts.append(CITATION_INSTRUCTIONS_INLINE_TEXT)
+            parts.append("=== DOCUMENTS IN CONTEXT (with [L<n>] line anchors) ===")
+            for d in documents_in_context:
+                text = extract_text(d)
+                numbered = number_lines(text) if text else "[document text could not be extracted — only the filename is known]"
+                parts.append("")
+                parts.append(f"--- BEGIN DOCUMENT: {d.original_filename} (sha256={d.sha256[:12]}…) ---")
+                parts.append(numbered)
+                parts.append(f"--- END DOCUMENT: {d.original_filename} ---")
     if media_in_context:
         parts.append("")
         parts.append("=== MEDIA INPUTS REFERENCED (not transcribed in this pass) ===")
@@ -229,10 +296,18 @@ def send_message(conversation_id: str, body: SendMessageBody, user: CurrentUser 
         },
     )
 
-    # Call the LLM.
+    # Call the LLM. When the provider supports attachments AND the
+    # COLDCASE_LLM_MULTIMODAL flag is set, we stream the PDF bytes inline
+    # for this single request — never cached, never persisted. (PRD §17)
     llm = get_llm_provider()
-    system_prompt = _build_system_prompt(case, documents, media)
-    response = llm.chat(system=system_prompt, user=body.content)
+    use_multimodal = _MULTIMODAL_ENABLED and getattr(llm, "supports_attachments", False) and bool(documents)
+    attachments: list[AttachedFile] | None = None
+    if use_multimodal:
+        attachments = _build_attachments(documents)
+    system_prompt = _build_system_prompt(case, documents, media, multimodal=use_multimodal)
+    response = llm.chat(system=system_prompt, user=body.content, attachments=attachments)
+    # Bytes go out of scope here — no Cold Case-side persistence.
+    attachments = None  # noqa: F841
     refusal_detected = _detect_refusal(response.content) if documents else False
 
     # Persist assistant response.

@@ -12,6 +12,7 @@ disclosure footer.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 from dataclasses import dataclass, field
@@ -19,9 +20,20 @@ from typing import Protocol
 
 
 @dataclass
+class AttachedFile:
+    """Per-request file attachment streamed inline to the LLM. The bytes
+    live ONLY in the request stack frame for the duration of one chat
+    call — never persisted by Cold Case, never uploaded to a long-lived
+    OpenAI Files API slot. See PRD business rule #17 (data residency)."""
+    filename: str
+    mime_type: str
+    data: bytes
+
+
+@dataclass
 class LLMResponse:
     content: str
-    provider: str                    # "ollama" | "gcc_copilot" | …
+    provider: str                    # "ollama" | "openai" | "gcc_copilot" | …
     model: str                       # exact model id (goes on the report)
     prompt_tokens: int = 0
     completion_tokens: int = 0
@@ -30,7 +42,15 @@ class LLMResponse:
 
 class LLMProvider(Protocol):
     name: str
-    def chat(self, system: str, user: str, *, context: dict | None = None) -> LLMResponse: ...
+    supports_attachments: bool
+    def chat(
+        self,
+        system: str,
+        user: str,
+        *,
+        context: dict | None = None,
+        attachments: list[AttachedFile] | None = None,
+    ) -> LLMResponse: ...
 
 
 # ── Mock provider: routes to local Ollama ──────────────────────────────────
@@ -39,9 +59,11 @@ class OllamaLLMProvider:
     """Local Ollama provider for dev. Produces well-formed prose responses.
 
     Uses the chat API directly (not the JSON-mode helper) since cold case
-    responses are free text, not JSON."""
+    responses are free text, not JSON. Text-only — falls back to the
+    server-side text-extraction (pypdf / OCR) path for documents."""
 
     name = "ollama"
+    supports_attachments = False
 
     def __init__(self, model: str | None = None, base_url: str | None = None):
         self.model = model or os.environ.get(
@@ -51,7 +73,14 @@ class OllamaLLMProvider:
             "OLLAMA_BASE_URL", "http://localhost:11434"
         )
 
-    def chat(self, system: str, user: str, *, context: dict | None = None) -> LLMResponse:
+    def chat(
+        self,
+        system: str,
+        user: str,
+        *,
+        context: dict | None = None,
+        attachments: list[AttachedFile] | None = None,
+    ) -> LLMResponse:
         import httpx
         endpoint = f"{self.base_url}/api/chat"
         payload = {
@@ -104,6 +133,11 @@ class OpenAILLMProvider:
     """
 
     name = "openai"
+    # gpt-4o-family and gpt-5.x natively read PDFs / images as message
+    # content. Cold Case streams the bytes inline at request time — they
+    # are NOT persisted by Cold Case and not uploaded to an OpenAI Files
+    # slot, per PRD business rule #17 (data residency).
+    supports_attachments = True
 
     def __init__(self, model: str | None = None, api_key: str | None = None):
         # Alias (no date suffix) tracks the latest snapshot; the snapshot id
@@ -112,7 +146,14 @@ class OpenAILLMProvider:
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
         self.base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
 
-    def chat(self, system: str, user: str, *, context: dict | None = None) -> LLMResponse:
+    def chat(
+        self,
+        system: str,
+        user: str,
+        *,
+        context: dict | None = None,
+        attachments: list[AttachedFile] | None = None,
+    ) -> LLMResponse:
         if not self.api_key:
             return LLMResponse(
                 content="[openai-llm: OPENAI_API_KEY not set — echoing prompt for dev.]\n\n"
@@ -121,15 +162,37 @@ class OpenAILLMProvider:
                 model=self.model + " (no-key-echo)",
             )
         import httpx
+        # Build user message content. If we have attachments, render as a
+        # multimodal content array: one `file` part per attachment + a text
+        # part with the user prompt. Otherwise plain text content.
+        if attachments:
+            user_content: list[dict] = []
+            for att in attachments:
+                b64 = base64.b64encode(att.data).decode("ascii")
+                user_content.append({
+                    "type": "file",
+                    "file": {
+                        "filename": att.filename,
+                        "file_data": f"data:{att.mime_type};base64,{b64}",
+                    },
+                })
+            user_content.append({"type": "text", "text": user})
+            messages: list[dict] = [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_content},
+            ]
+        else:
+            messages = [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ]
+
         # Omit `temperature` entirely — newer models (gpt-5.x family) reject
         # any non-default value and we don't want creative variation for
         # cold-case work in the first place. The model's own default is fine.
         payload = {
             "model": self.model,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
+            "messages": messages,
         }
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -188,12 +251,22 @@ class GccCopilotLLMProvider:
     """
 
     name = "gcc_copilot"
+    # When wired, this provider will reference SharePoint/OneDrive items
+    # rather than streaming inline bytes — see PRD Phase D notes.
+    supports_attachments = True
 
     def __init__(self, *, endpoint: str | None = None, model_hint: str | None = None):
         self.endpoint = endpoint or os.environ.get("GCC_COPILOT_ENDPOINT", "")
         self.model = model_hint or os.environ.get("GCC_COPILOT_MODEL", "gpt-4o-2024-08-06")
 
-    def chat(self, system: str, user: str, *, context: dict | None = None) -> LLMResponse:
+    def chat(
+        self,
+        system: str,
+        user: str,
+        *,
+        context: dict | None = None,
+        attachments: list[AttachedFile] | None = None,
+    ) -> LLMResponse:
         # Intentional NotImplementedError. Wire up when the agency supplies
         # the Entra app credentials and chosen Copilot API surface (Graph
         # /copilot vs. Azure OpenAI deployment in the GCC tenant).
