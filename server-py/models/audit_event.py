@@ -31,7 +31,12 @@ class AuditEventType(str, Enum):
     APPROVAL_GIVEN = "approval.given"
     RETENTION_CHANGED = "retention.changed"
     CASE_DISCOVERY_EXPORTED = "case.discovery_exported"
-    VENDOR_ACCESS = "vendor.access"            # §13663(d) audit
+    VENDOR_ACCESS = "vendor.access"            # generic §13663(d) audit (legacy)
+    VENDOR_ACCESS_REQUESTED = "vendor.access.requested"
+    VENDOR_ACCESS_APPROVED = "vendor.access.approved"
+    VENDOR_ACCESS_DENIED = "vendor.access.denied"
+    VENDOR_ACCESS_REVOKED = "vendor.access.revoked"
+    VENDOR_ACCESS_USED = "vendor.access.used"
     PURGE_BLOCKED = "purge.blocked"             # §13663(b) refused a purge
     FIRST_DRAFT_MUTATION_BLOCKED = "first_draft.mutation_blocked"
 

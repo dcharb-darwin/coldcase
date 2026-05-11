@@ -368,6 +368,19 @@ def export_discovery_package(case_id: str, body: DiscoveryPackageBody, user: Cur
     return result
 
 
+@router.get("/{case_id}/audit-manifest.pdf")
+def download_case_audit_manifest(case_id: str, user: CurrentUser = Depends(current_user)):
+    """F15 — Per-case audit manifest PDF. Sibling to F7 (per-report chain)."""
+    from fastapi.responses import FileResponse
+    from services.case_manifest_export import export_case_manifest_pdf
+    case = Case.objects(id=case_id, tenant_id=user.tenant_id).first()
+    if not case:
+        raise HTTPException(404, "Case not found")
+    path = export_case_manifest_pdf(case)
+    return FileResponse(path, media_type="application/pdf",
+                        filename=f"{case.case_number}.audit-manifest.pdf")
+
+
 @router.get("/{case_id}/discovery-package/{zip_filename}")
 def download_discovery_package(case_id: str, zip_filename: str, user: CurrentUser = Depends(current_user)):
     """Stream a previously-generated discovery ZIP. In production this is

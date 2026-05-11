@@ -8,6 +8,9 @@ from models.message import Message, MessageRole
 from models.report import Report, ReportStatus
 from models.approval import Approval
 from models.audit_event import AuditEvent, AuditEventType
+from models.vendor_access import (
+    VendorAccessRequest, VendorAccessPurpose, VendorAccessStatus,
+)
 
 __all__ = [
     "Case", "CaseStatus", "CaseClassification", "RetentionPolicy",
@@ -18,4 +21,5 @@ __all__ = [
     "Report", "ReportStatus",
     "Approval",
     "AuditEvent", "AuditEventType",
+    "VendorAccessRequest", "VendorAccessPurpose", "VendorAccessStatus",
 ]

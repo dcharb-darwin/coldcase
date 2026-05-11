@@ -98,6 +98,7 @@ def create_app() -> FastAPI:
     from routers.reports import router as reports_router
     from routers.audit import router as audit_router
     from routers.prompts import router as prompts_router
+    from routers.vendor_access import router as vendor_access_router
     from seed.synthetic_case import router as demo_router
     from seed.civil_rights_cases import router as civil_rights_router
     application.include_router(cases_router, prefix=api_prefix)
@@ -105,6 +106,7 @@ def create_app() -> FastAPI:
     application.include_router(reports_router, prefix=api_prefix)
     application.include_router(audit_router, prefix=api_prefix)
     application.include_router(prompts_router, prefix=api_prefix)
+    application.include_router(vendor_access_router, prefix=api_prefix)
     application.include_router(demo_router, prefix=api_prefix)
     application.include_router(civil_rights_router, prefix=api_prefix)
 
