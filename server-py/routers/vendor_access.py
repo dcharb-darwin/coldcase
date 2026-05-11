@@ -24,6 +24,7 @@ from models import (
 from models.audit_event import AuditEventType
 from routers._deps import CurrentUser, current_user, require_perm
 from services import case_audit
+from services.vendor_scope import auto_expire_if_due as _auto_expire_if_due
 
 
 router = APIRouter(prefix="/vendor/access-requests", tags=["Vendor access"])
@@ -54,20 +55,6 @@ class RevokeBody(BaseModel):
 
 class RecordAccessBody(BaseModel):
     note: str = Field(default="", max_length=500)
-
-
-# ── Helpers ─────────────────────────────────────────────────────────────────
-
-
-def _auto_expire_if_due(req: VendorAccessRequest) -> None:
-    """Flip status to EXPIRED if approved + past expiry. Idempotent."""
-    if (
-        req.status == VendorAccessStatus.APPROVED.value
-        and req.expires_at
-        and req.expires_at < datetime.utcnow()
-    ):
-        req.status = VendorAccessStatus.EXPIRED.value
-        req.save()
 
 
 # ── Endpoints ───────────────────────────────────────────────────────────────

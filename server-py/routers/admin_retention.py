@@ -28,4 +28,4 @@ def run_retention_sweep(
         actor_user_id=user.user_id,
         actor_display=user.display_name,
     )
-    return retention_sweeper.to_dict(report)
+    return report.to_dict()

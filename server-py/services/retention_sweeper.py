@@ -20,7 +20,7 @@ Returns a structured report the caller can render in the admin UI.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -50,31 +50,44 @@ class CaseSweepResult:
     media_purged: int = 0
     reports_kept: int = 0  # signed reports always preserved
 
+    def to_dict(self) -> dict:
+        return asdict(self)
+
 
 @dataclass
 class SweepReport:
     horizon: str
     apply: bool
     inspected: int = 0
-    purged: int = 0
-    blocked: int = 0
+    cases_purged: int = 0
+    first_drafts_preserved: int = 0
     cases: list[CaseSweepResult] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "horizon": self.horizon,
+            "apply": self.apply,
+            "inspected": self.inspected,
+            "cases_purged": self.cases_purged,
+            "first_drafts_preserved": self.first_drafts_preserved,
+            "cases": [c.to_dict() for c in self.cases],
+        }
 
 
 def _case_eligible(case: Case, now: datetime) -> tuple[bool, str]:
-    if case.status != CaseStatus.CLOSED.value:
-        return False, "case not closed"
     if not case.closed_at:
         return False, "no closed_at"
-    if case.retention_policy == RetentionPolicy.INDEFINITE.value:
+    policy = RetentionPolicy(case.retention_policy)
+    if policy is RetentionPolicy.INDEFINITE:
         return False, "retention=indefinite"
-    if case.retention_policy == RetentionPolicy.MATCH_OFFICIAL_REPORT.value:
+    if policy is RetentionPolicy.MATCH_OFFICIAL_REPORT:
         return False, "retention tied to report (no horizon)"
-    if case.retention_policy == RetentionPolicy.SEVEN_YEARS.value:
-        if now - case.closed_at >= SEVEN_YEARS:
+    if policy is RetentionPolicy.SEVEN_YEARS:
+        age = now - case.closed_at
+        if age >= SEVEN_YEARS:
             return True, ""
-        return False, f"closed for {(now - case.closed_at).days}d < 7y"
-    return False, f"unknown policy {case.retention_policy!r}"
+        return False, f"closed for {age.days}d < 7y"
+    return False, f"unknown policy {policy!r}"
 
 
 def sweep(*, tenant_id: str, apply: bool = False,
@@ -101,27 +114,24 @@ def sweep(*, tenant_id: str, apply: bool = False,
             out.cases.append(result)
             continue
 
-        # Walk the conversations / messages / docs.
-        conversations = list(Conversation.objects(case=case))
-        all_messages: list[Message] = []
-        for conv in conversations:
-            all_messages.extend(Message.objects(conversation=conv))
-
-        protected = [m for m in all_messages if m.is_first_ai_draft]
-        purgeable = [m for m in all_messages if not m.is_first_ai_draft]
+        conversations = list(Conversation.objects(case=case).only("id"))
+        # One query for the case's whole message set, projected to the
+        # fields we actually need.
+        messages = list(Message.objects(conversation__in=conversations)
+                        .only("id", "is_first_ai_draft",
+                              "first_draft_locked_for_report_id"))
+        protected = [m for m in messages if m.is_first_ai_draft]
+        purgeable_ids = [m.id for m in messages if not m.is_first_ai_draft]
         result.first_draft_messages_preserved = len(protected)
-        result.messages_purged = len(purgeable)
+        result.messages_purged = len(purgeable_ids)
         result.conversations_purged = len(conversations)
 
-        docs = list(Document.objects(case=case))
-        media = list(MediaInput.objects(case=case))
-        result.documents_purged = len(docs)
-        result.media_purged = len(media)
+        doc_ids = [d.id for d in Document.objects(case=case).only("id")]
+        media_ids = [m.id for m in MediaInput.objects(case=case).only("id")]
+        result.documents_purged = len(doc_ids)
+        result.media_purged = len(media_ids)
+        result.reports_kept = Report.objects(case=case).count()
 
-        reports = list(Report.objects(case=case))
-        result.reports_kept = len(reports)
-
-        # Visibility events
         if protected:
             case_audit.log(
                 tenant_id=tenant_id, user_id=actor_user_id,
@@ -139,22 +149,23 @@ def sweep(*, tenant_id: str, apply: bool = False,
                                         if m.first_draft_locked_for_report_id}),
                 },
             )
-            out.blocked += len(protected)
+            out.first_drafts_preserved += len(protected)
 
         if apply:
-            # Order: messages → conversations → docs/media. Reports stay.
-            for m in purgeable:
-                m.delete()
-            for conv in conversations:
-                # Re-check: only delete the conversation if no first-draft
-                # messages still reference it.
-                remaining = Message.objects(conversation=conv).count()
-                if remaining == 0:
-                    conv.delete()
-            for d in docs:
-                d.delete()
-            for med in media:
-                med.delete()
+            if purgeable_ids:
+                Message.objects(id__in=purgeable_ids).delete()
+            # Only drop a conversation if no first-draft message still
+            # anchors it.
+            empty_convs = [
+                c.id for c in conversations
+                if Message.objects(conversation=c).count() == 0
+            ]
+            if empty_convs:
+                Conversation.objects(id__in=empty_convs).delete()
+            if doc_ids:
+                Document.objects(id__in=doc_ids).delete()
+            if media_ids:
+                MediaInput.objects(id__in=media_ids).delete()
             case_audit.log(
                 tenant_id=tenant_id, user_id=actor_user_id,
                 user_display=actor_display,
@@ -176,19 +187,8 @@ def sweep(*, tenant_id: str, apply: bool = False,
                     "first_draft_preserved": result.first_draft_messages_preserved,
                 },
             )
-            out.purged += 1
+            out.cases_purged += 1
 
         out.cases.append(result)
 
     return out
-
-
-def to_dict(report: SweepReport) -> dict:
-    return {
-        "horizon": report.horizon,
-        "apply": report.apply,
-        "inspected": report.inspected,
-        "purged": report.purged,
-        "blocked_first_draft_messages": report.blocked,
-        "cases": [c.__dict__ for c in report.cases],
-    }

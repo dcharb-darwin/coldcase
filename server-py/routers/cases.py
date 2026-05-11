@@ -5,7 +5,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from pathlib import PurePosixPath
+
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from models import (
@@ -178,6 +180,50 @@ def update_case(case_id: str, body: UpdateCaseBody, user: CurrentUser = Depends(
 # ── Documents ───────────────────────────────────────────────────────────────
 
 
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB; raise once real blob storage is wired.
+
+
+def _create_document_for_case(
+    *, case: Case, user: CurrentUser,
+    storage_uri: str, sha256: str, size_bytes: int,
+    original_filename: str, mime_type: str, page_count: int,
+    audit_source: str,
+) -> Document:
+    """Persist a Document pointer, bump the case's last-activity, and emit
+    DOCUMENT_REGISTERED. Shared between the pointer-only registration path
+    and the multipart upload path."""
+    document = Document(
+        tenant_id=user.tenant_id, case=case,
+        storage_uri=storage_uri, sha256=sha256, size_bytes=size_bytes,
+        original_filename=original_filename, mime_type=mime_type,
+        page_count=page_count, uploaded_by=user.user_id,
+    ).save()
+    case.last_activity_at = datetime.utcnow()
+    case.save()
+    case_audit.log_user_event(
+        user,
+        event_type=AuditEventType.DOCUMENT_REGISTERED,
+        case_id=str(case.id), document_id=str(document.id),
+        summary=f"{audit_source.title()} {original_filename}",
+        detail={
+            "sha256": sha256, "size_bytes": size_bytes,
+            "storage_uri": storage_uri, "source": audit_source,
+        },
+    )
+    return document
+
+
+def _count_pdf_pages(data: bytes) -> int:
+    """Best-effort PDF page count; returns 0 on parse failure rather
+    than blocking the upload."""
+    try:
+        from io import BytesIO
+        from pypdf import PdfReader
+        return len(PdfReader(BytesIO(data)).pages)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 @router.post("/{case_id}/documents", status_code=201)
 @require_perm("document.register")
 def register_document(case_id: str, body: RegisterDocumentBody, user: CurrentUser = Depends(current_user)):
@@ -188,42 +234,19 @@ def register_document(case_id: str, body: RegisterDocumentBody, user: CurrentUse
     sha256 = body.sha256
     size_bytes = body.size_bytes
     if not sha256:
-        storage = get_document_storage_provider()
         try:
-            head = storage.head(body.storage_uri)
+            head = get_document_storage_provider().head(body.storage_uri)
         except FileNotFoundError as exc:
             raise HTTPException(422, str(exc))
         sha256 = head.sha256
         size_bytes = head.size_bytes or body.size_bytes
 
-    document = Document(
-        tenant_id=user.tenant_id,
-        case=case,
-        storage_uri=body.storage_uri,
-        sha256=sha256,
-        original_filename=body.original_filename,
-        mime_type=body.mime_type,
-        page_count=body.page_count,
-        size_bytes=size_bytes,
-        uploaded_by=user.user_id,
-    ).save()
-
-    case.last_activity_at = datetime.utcnow()
-    case.save()
-
-    case_audit.log(
-        tenant_id=user.tenant_id, user_id=user.user_id,
-        user_display=user.display_name, ip_address=user.ip_address,
-        event_type=AuditEventType.DOCUMENT_REGISTERED,
-        case_id=str(case.id), document_id=str(document.id),
-        summary=f"Registered {document.original_filename}",
-        detail={"sha256": document.sha256, "size_bytes": document.size_bytes},
-    )
-    return document.to_dict()
-
-
-# Max upload size — keep modest until the customer wires real blob storage.
-MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
+    return _create_document_for_case(
+        case=case, user=user,
+        storage_uri=body.storage_uri, sha256=sha256, size_bytes=size_bytes,
+        original_filename=body.original_filename, mime_type=body.mime_type,
+        page_count=body.page_count, audit_source="registered",
+    ).to_dict()
 
 
 @router.post("/{case_id}/documents/upload", status_code=201)
@@ -231,15 +254,13 @@ MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
 def upload_document(
     case_id: str,
     file: UploadFile = File(...),
-    mime_type_override: str = Form(""),
     user: CurrentUser = Depends(current_user),
 ):
-    """Multipart upload path — accepts the binary, writes it through the
+    """Multipart upload path: accepts the binary, writes it through the
     artifact store, and registers the Document. Used by the in-app file
     picker for dev/demo and small-agency single-tenant deployments. For
-    production the customer points `PROVIDER_DOCUMENT_STORAGE` at their
-    own blob storage and continues to use `register_document` against
-    pre-existing URIs."""
+    production, customers point PROVIDER_DOCUMENT_STORAGE at their own
+    blob storage and use `register_document` against pre-existing URIs."""
     from lib.hash import sha256_bytes
     from services.artifact_store import get_artifact_store
 
@@ -254,47 +275,21 @@ def upload_document(
         raise HTTPException(422, "Empty upload")
 
     sha = sha256_bytes(data)
-    mime = mime_type_override or file.content_type or "application/octet-stream"
-    # Key the file under the case so the ArtifactStore layout stays browsable.
-    key = f"documents/{case.id}/{sha}-{file.filename}"
-    stored = get_artifact_store().put(key, data, content_type=mime)
-
-    page_count = 0
-    if mime == "application/pdf":
-        try:
-            from pypdf import PdfReader
-            from io import BytesIO
-            page_count = len(PdfReader(BytesIO(data)).pages)
-        except Exception:  # noqa: BLE001 — best effort; not blocking
-            page_count = 0
-
-    document = Document(
-        tenant_id=user.tenant_id,
-        case=case,
-        storage_uri=stored.uri,
-        sha256=sha,
-        original_filename=file.filename or "upload.bin",
-        mime_type=mime,
-        page_count=page_count,
-        size_bytes=len(data),
-        uploaded_by=user.user_id,
-    ).save()
-
-    case.last_activity_at = datetime.utcnow()
-    case.save()
-
-    case_audit.log(
-        tenant_id=user.tenant_id, user_id=user.user_id,
-        user_display=user.display_name, ip_address=user.ip_address,
-        event_type=AuditEventType.DOCUMENT_REGISTERED,
-        case_id=str(case.id), document_id=str(document.id),
-        summary=f"Uploaded {document.original_filename}",
-        detail={
-            "sha256": sha, "size_bytes": len(data),
-            "storage_uri": stored.uri, "source": "upload",
-        },
+    mime = file.content_type or "application/octet-stream"
+    # Strip any directory components from the client-supplied filename
+    # before it lands in our artifact key.
+    safe_name = PurePosixPath(file.filename or "upload.bin").name
+    stored = get_artifact_store().put(
+        f"documents/{case.id}/{sha}-{safe_name}", data, content_type=mime,
     )
-    return document.to_dict()
+
+    return _create_document_for_case(
+        case=case, user=user,
+        storage_uri=stored.uri, sha256=sha, size_bytes=len(data),
+        original_filename=safe_name, mime_type=mime,
+        page_count=_count_pdf_pages(data) if mime == "application/pdf" else 0,
+        audit_source="uploaded",
+    ).to_dict()
 
 
 @router.get("/{case_id}/documents")
