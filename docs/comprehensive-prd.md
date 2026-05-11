@@ -1,7 +1,7 @@
 # Cold Case — Comprehensive PRD
 
-**Version:** 0.5.0 (F7/F8/F9 reporting surface designed; rules #17–#22 codified after three-reviewer pass)
-**Status:** PRD locked for the chain-PDF + discovery-package + editorial-diff batch; execution next
+**Version:** 0.6.0 (F10 vendor portal closes §13663(d); F15/F16/F17 compliance reporting; rule #23 added)
+**Status:** Compliance + vendor batch landed
 **Date:** 2026-05-11
 **Sources:**
 - `docs/usecase-transcript.txt` — interview with Detective Gaudi (cold case investigator) + IT sponsor, 2026-05-11
@@ -253,6 +253,84 @@ Explicitly **out of scope** to keep MVP focused (per Dan's stated scope discipli
   - The diff response is never stored on disk or in a cache table; recomputed per request.
 - **Out of scope:** semantic / NLP "you removed an exculpatory claim" classifier (Phase 2 idea — see §13); supervisor sign-off on diffs above a threshold (Phase 2); semantic counts ("you removed N sentences from the AI!") — explicitly excluded to avoid creating perverse incentives to under-edit.
 
+### F15 — Per-Case Audit Manifest PDF
+
+- **What:** a single PDF that summarizes everything Cold Case knows about a case at audit time. Distinct from F7 (one chain per report) — F15 is the case-level rollup. Contents: case header (number, title, classification, retention, status), a one-row-per-report table (id, title, status, signer, signed_at, content_sha256, AI program(s) used, citation count, citation coverage %), source-document inventory with hashes, MediaInput inventory (§13663(c)(2)), distinct AI programs across the case, audit-event counts by type, and a "verify any report's chain" footer that names the per-report chain endpoint.
+- **Why:** when the city auditor opens "Q3 2026 review" they want one page that says *here's case CRRA-1954-RUSH, here are the 4 reports we wrote on it, here's the retention picture, here's who signed each, here's every model that touched it*. F7 chains are per-report. F15 is per-case. Both will get bundled together in F8 discovery packages, but F15 stands alone for routine audit.
+- **Mechanism:**
+  - New module `services/case_manifest_export.py` reuses ReportLab + the styling from `chain_export.py`. Renders a 2–4 page PDF.
+  - `GET /cases/{id}/audit-manifest.pdf` — generated on demand, cached at `uploads/manifests/<case_id>.manifest.pdf`. Regenerated if cache is missing or stale (case.last_activity_at newer than file mtime).
+  - Self-identifying footer: case number + tenant id + generated_at. PDF metadata Subject: "Cold Case — case audit manifest".
+- **Acceptance:**
+  - For any case with ≥1 signed report, the manifest renders cleanly with all sections populated.
+  - The reports table cites every signed report's AI programs + citation coverage stats matching what F7's chain reports.
+  - For a case with 0 signed reports, the PDF still renders with "(no signed reports yet)" placeholders so a "show me an empty case" view is possible.
+- **Out of scope:** redaction; cross-case rollups (those are F16 and a future "agency dashboard"); historical snapshots of the manifest at a past date.
+
+### F16 — AI Program Inventory
+
+- **What:** a tenant-scoped report that lists every distinct AI program version used in any signed report, with usage counts and a sample report id per program. Filterable by date range.
+- **Why:** California SB-524's expected oversight cadence is a state attestation: "tell us every AI you used last year and how many official reports it produced." Today Cold Case captures the model snapshot id on every Message + every Report.ai_programs_used. F16 is the aggregation.
+- **Mechanism:**
+  - `GET /audit/ai-programs?since=<iso>&until=<iso>` — returns `[{name, version, provider, report_count, first_used, last_used, sample_report_id}]` sorted by `report_count desc`.
+  - Implementation: MongoDB aggregation over `Report.ai_programs_used`. No new schema.
+  - UI: a table on the Audit page (already exists) with a date-range picker.
+- **Acceptance:**
+  - Returns rows only for signed reports (drafts / unsigned excluded — they didn't produce a §13663 artifact).
+  - Date-range filter applies on `Report.signed_at`.
+  - For each row, the sample_report_id resolves to a real Report the auditor can click into.
+- **Out of scope:** breakdown by officer (Phase 3); cost / token usage (no business need); per-month time-series chart (would be nice; defer).
+
+### F17 — Refusal & Anomaly Report
+
+- **What:** a filtered view of audit events flagged for human review: every `MESSAGE_ASSISTANT` event with `detail.refusal_detected=true` and every `VENDOR_ACCESS` event. Helps the city auditor + internal QA spot patterns of model regression and patterns of vendor-staff access.
+- **Why:** today these events are persisted but invisible unless someone knows to filter. Making them a first-class report converts background noise into actionable signal.
+- **Mechanism:**
+  - `GET /audit/anomalies?since=...&until=...` returns a structured payload with two sections: `refusals[]` (each from an assistant message) and `vendor_access[]` (each from a vendor-access event, when F10 lands). Each row links to the case + report + conversation for drill-down.
+  - UI: add an "Anomalies" tab to the Audit page; default date range = last 30 days.
+- **Acceptance:**
+  - Returns zero rows when nothing has gone wrong (the desired steady state).
+  - Each refusal row carries: timestamp, user, case, conversation, message id, the refusal phrase that matched, AI model id, prompt-token count.
+  - Each vendor-access row carries: timestamp, requesting Darwin operator, purpose, scope, approval status.
+- **Out of scope:** automated remediation (e.g., auto-rerun the prompt against a stronger model); alerting on threshold breaches.
+
+### F10 — Vendor Access Portal (statutory: §13663(d) enforcement)
+
+- **What:** a request-and-approve workflow that records every time Darwin operations staff need to access agency data under one of the §13663(d)(iii) carve-out purposes (troubleshooting, bias mitigation, accuracy improvement, system refinement). Today rule #9 is contract-only; F10 makes the contract enforceable in software so a city attorney can audit "show me every time a Darwin engineer touched our data in 2026."
+- **Why:** the statutory reviewer flagged this as the only conspicuous §13663 gap that F7/F8/F9 didn't close. Without it, vendor compliance is unverifiable post-hoc.
+- **Mechanism:**
+  - **New model `VendorAccessRequest`** (in `models/vendor_access.py`):
+    - `id`, `tenant_id` (the agency whose data is being accessed)
+    - `requesting_operator_id` (Darwin engineer), `requesting_operator_display`
+    - `purpose` ∈ {`troubleshooting`, `bias_mitigation`, `accuracy_improvement`, `system_refinement`}
+    - `reason_detail` (free text — required, e.g. "investigating intermittent OCR failure reported in ticket #142")
+    - `scope` — either `tenant_wide` or `case_ids: [str]` or `report_ids: [str]`
+    - `requested_at`, `approved_by` (agency admin id), `approved_at`, `denied_by`, `denied_at`, `denial_reason`
+    - `expires_at` (defaults to 24h after approval)
+    - `status` ∈ {`pending`, `approved`, `denied`, `expired`, `revoked`}
+    - `accessed_at[]` — append-only timestamps each time the operator used the approved access during the validity window
+  - **New endpoints:**
+    - `POST /vendor/access-requests` — Darwin operator opens a request (tenant_id, purpose, reason_detail, scope, expires_in_hours)
+    - `GET /vendor/access-requests` — list, filterable by status / scope. Agency-side admin sees all requests against their tenant; Darwin operator sees their own
+    - `POST /vendor/access-requests/{id}/approve` — agency admin only
+    - `POST /vendor/access-requests/{id}/deny` — agency admin only, must supply `denial_reason`
+    - `POST /vendor/access-requests/{id}/revoke` — agency admin can revoke an already-approved request mid-window
+    - `POST /vendor/access-requests/{id}/record-access` — the Darwin operator pings this from their tooling each time they actually pull data, recording the timestamp + a short note. Hard-fails (403) if status ≠ `approved` or `expires_at < now`
+  - **New audit event types:** `VENDOR_ACCESS_REQUESTED`, `VENDOR_ACCESS_APPROVED`, `VENDOR_ACCESS_DENIED`, `VENDOR_ACCESS_REVOKED`, `VENDOR_ACCESS_USED`. Each carries the request id + scope + purpose + operator identity.
+  - **UI:**
+    - Admin route `/admin/vendor-access` (gated by `audit.read` permission — same role the city attorney uses) renders the request queue, with approve / deny / revoke action buttons.
+    - A pending-request count badge appears on the admin nav when any request is awaiting approval.
+  - **Permissions:**
+    - New permission `vendor_access.request` — Darwin operator role
+    - New permission `vendor_access.approve` — agency admin only (typically the city attorney or designated records officer)
+    - The agency admin DOES NOT need `vendor_access.request` — separation of duties
+- **Acceptance:**
+  - End-to-end smoke: operator submits request → agency admin approves → operator pings `record-access` (succeeds) → expires_at passes → next `record-access` fails 403 → status auto-flips to `expired`.
+  - The F17 anomaly report includes every `VENDOR_ACCESS_*` event with the right structure.
+  - The audit event stream is queryable by `event_type=vendor.access.used` for the auditor.
+  - A new audit-summary row on each Case shows "Vendor accesses against this case: N" so a city attorney reviewing the case sees the history at a glance.
+- **Out of scope (Phase 3):** automated approval routing based on purpose × scope; integration with Darwin's internal ticket system; per-operator activity dashboards.
+
 ## 6. Data model (MVP)
 
 Entities:
@@ -308,6 +386,7 @@ All entities partition by `app_id="coldcase"` (Launchpad Admin Pattern) and by `
 20. **The diff between AI first draft and signed report is the officer's work product.** F9 makes this delta available as a JSON diff and a printable PDF. Under Brady, if the officer deleted exculpatory language the AI surfaced, that change is visible in the diff. The diff itself is not an "official report" — it's an audit artifact, watermarked accordingly. The diff is computed on demand and never cached as a separate artifact (no new persistence surface).
 21. **Discovery-package temp files have a cleanup contract.** Any F8 ZIP assembly that requires temp-disk space writes to a Cold-Case-controlled directory (not system `/tmp`). On successful write to customer storage, the temp file is unlinked synchronously in the same transaction. On upload failure, the temp file is deleted after a 1-hour TTL; manual recovery is permission-gated (`case.export_recovery`) and emits an `AuditEvent`. Signed URLs returned to the requester have a default 1-hour TTL, are never logged in plaintext to external observability systems, and have their `sha256` (not their value) recorded on the `case.discovery_exported` audit event for traceability.
 22. **Adjacent California statutes acknowledged.** Cold Case retention defaults are designed to satisfy the floor set by **Government Code §34090** (records retention for local agencies — generally 2+ years for police records, longer for homicide). Discovery exports (F8) are timed and structured to satisfy **California Evidence Code §1054.1** (formal pre-trial discovery obligations of the prosecution) and to enable prompt **Brady v. Maryland** disclosure of exculpatory material — the F9 editorial-work diff is the primary surface for that latter obligation.
+23. **Vendor access is logged before it happens, not after (§13663(d) enforcement).** Any Darwin operations engineer who needs to access agency data under one of the §13663(d)(iii) carve-out purposes must, *before* accessing, open a `VendorAccessRequest` (F10) with: explicit purpose category, free-text reason detail, scope (case ids or tenant-wide), and a requested expiry. The request remains in `pending` status until an agency admin (typically the city attorney or designated records officer) `approve`s or `denies` it. Each actual data pull during the validity window pings `record-access` to leave a usage timestamp. After `expires_at` or `revoke`, further `record-access` calls hard-fail 403 and the request auto-flips to `expired`. This converts §13663(d) from a contractual promise to a per-request, per-use, per-tenant audit trail the city attorney can subpoena directly.
 
 ## 8. Provider architecture
 
@@ -365,7 +444,7 @@ Each row maps a statutory subdivision to the Cold Case feature/rule that satisfi
 | **(b)** | First AI draft retained as long as the official report is retained; drafts are NOT officer statements | F5 + Business rules #3, #6, #10. `Message.is_first_ai_draft=true`, immutable post-promote, retention slaved to `Report.retention`. Audit exports label drafts as non-statements | §5/F5, §6, §7/#3,#6,#10 |
 | **(c)(1)** | Audit trail identifies the person who used AI | Every Message has `user_id`; every Report has `signed_by`; AuditEvent stream is per-user. F4 surfaces this; F7 prints the full chain as a courtroom-grade PDF; F8 bundles all chains for a case | §5/F4, §5/F7, §5/F8, §6 |
 | **(c)(2)** | Audit trail identifies video/audio footage used as input | `MediaInput` entity, linked to Conversation + Report | §6, §7/#7 |
-| **(d)** | Vendor cannot share/sell/otherwise use agency data except for agency, court order, or troubleshooting/bias/accuracy/refinement | Business rule #9 + contractual MSA term + `AuditEvent.vendor_access` for any (c)-purpose access. **Phase 2: F10 Vendor Access Portal** (§13) provides a request-and-approve workflow that makes the contract enforceable in software | §7/#9, §13/F10 |
+| **(d)** | Vendor cannot share/sell/otherwise use agency data except for agency, court order, or troubleshooting/bias/accuracy/refinement | **F10 Vendor Access Portal**: `VendorAccessRequest` model + approve/deny/revoke/record-access endpoints + 5 audit-event types. Combined with business rule #9 (contractual) + rule #23 (per-request lifecycle), §13663(d) is now both contractually and software-enforceable. F17 Anomaly Report surfaces every `vendor.access.used` event for routine review | §5/F10, §7/#9, §7/#23, §5/F17 |
 | **(e) — "AI" definition** | Systems that "infer from the input it receives how to generate outputs" — covers narrative-drafting + generative report enhancement | All Copilot interactions are in scope. Documented in `services/llm_provider.py` | §8 |
 | **(e) — "official report" definition** | The **final version** signed by the officer | `Report` entity is "official report"; pre-sign drafts are not | §6, §7/#5 |
 | **(e) — "first draft" definition** | The initial document or narrative produced **solely by AI** | `Message.is_first_ai_draft` set only on the assistant Message before any officer edit | §6, §7/#3 |
@@ -395,7 +474,6 @@ Status legend: ✅ = automated smoke test passes locally; ⏳ = not yet covered.
 
 ### Phase 2 features (planned, not in this batch)
 
-- **F10 — Vendor Access Portal.** Surface for Darwin operations staff to request access to agency data under §13663(d)(iii) purposes (troubleshooting, bias mitigation, accuracy improvement, system refinement) via a portal with explicit reason + scope, agency-approval gate, time-boxed access, and a `vendor.access` event stream queryable by the city attorney. Today, rule #9 is enforced contractually + via the audit event schema, but no in-product surface exists for it. F10 makes the contract enforceable in software.
 - **F11 — Detective playground.** An ephemeral "scratch" conversation that lets the detective experiment with prompts before committing them to the auditable record. Trade-off: §13663(c) audit-trail strength wants every prompt logged. F11 design: scratch lives ≤24h and is auto-pruned, OR remains in the chain but is flagged "scratch / pre-promotion" so the city attorney can filter it out. Open question for legal review.
 - **F12 — Second-opinion workflow.** Re-run the same prompt against a different model (e.g., gpt-5.5 ↔ a Claude or GCC-Copilot deployment) to surface inter-model disagreement. Important for high-stakes cases (homicide) where hallucination risk justifies the cost.
 - **F13 — Semantic-change classifier on F9 diff.** Flag the diff segments that match patterns like "officer removed an AI-noted uncertainty" or "officer added an unsourced claim", so the auditor's eye is drawn to high-Brady-relevance changes. This is the natural next step after F9.
@@ -406,6 +484,7 @@ Status legend: ✅ = automated smoke test passes locally; ⏳ = not yet covered.
 
 | Version | Date | Changes |
 |---|---|---|
+| 0.6.0 | 2026-05-11 | F10 Vendor Access Portal closes the only conspicuous §13663(d) gap from the v0.5.0 reviewer pass — new `VendorAccessRequest` model + request/approve/deny/revoke/record-access endpoints + 5 audit-event types + admin route. F15 Per-Case Audit Manifest PDF for case-level rollup (sibling to F7 chain PDFs). F16 AI Program Inventory for SB-524 annual attestation. F17 Refusal & Anomaly Report surfaces refusal_detected + vendor.access events. Business rule #23 added (vendor-access lifecycle). §12 (d) row upgraded from "Phase 2 idea" to shipped |
 | 0.5.0 | 2026-05-11 | F7 (chain-of-custody PDF auto-paired on export, with media inventory + refusal flags + citation-coverage stats + audit-integrity hash), F8 (discovery-package ZIP with self-signing manifest, signed-URL handoff to customer storage, role-gated "Export for discovery" UI), F9 (officer's-editorial-work diff with neutral color treatment and Brady-aware framing). Business rules #17 clarified (audit-artifact carve-out), #21 added (temp-file cleanup), #22 added (adjacent CA statutes acknowledged). §13 reorganized into out-of-scope vs Phase 2 (F10 vendor portal, F11 playground, F12 second-opinion, F13 semantic diff classifier, F14 inline penal-code lookup, log scrubbing). PRD reviewed by three subagents (statutory completeness, data-residency/threat-model, detective UX) before lock |
 | 0.4.0 | 2026-05-11 | Backend MVP landed: domain models, LLM + DocumentStorage provider seams, F1/F2/F3/F4 routers, §13663-compliant PDF export. End-to-end smoke (17 steps incl. 9 statute-driven checks) green |
 | 0.3.0 | 2026-05-11 | SB-524 / Penal Code §13663 statutory mapping; added Report entity + MediaInput; rewrote business rules and F3 around first-AI-draft + statutory disclosure text; added §12 compliance matrix |
