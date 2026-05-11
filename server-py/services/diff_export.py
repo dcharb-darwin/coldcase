@@ -128,10 +128,11 @@ def export_diff_pdf(report: Report, *, output_dir: str | None = None) -> str:
     diff = compute_diff(report)
     signer = report.signature.display_name or report.signature.user_id if report.signature else "—"
 
+    from lib.agency_branding import top_margin_for_branding
     pdf = SimpleDocTemplate(
         path, pagesize=LETTER,
         leftMargin=0.75 * inch, rightMargin=0.75 * inch,
-        topMargin=0.75 * inch, bottomMargin=0.95 * inch,
+        topMargin=top_margin_for_branding(), bottomMargin=0.95 * inch,
         title=f"Officer's editorial work — Cold Case Report {report.id}",
         author=signer,
         subject="Cold Case Report — officer's editorial work (§13663(b) audit work product)",
@@ -222,6 +223,8 @@ def export_diff_pdf(report: Report, *, output_dir: str | None = None) -> str:
         story.append(Paragraph(" ".join(merged_html), body))
 
     def _on_page(canvas, doc_):
+        from lib.agency_branding import draw_letterhead
+        draw_letterhead(canvas)
         _draw_diff_footer(canvas, doc_, report=report)
 
     pdf.build(story, onFirstPage=_on_page, onLaterPages=_on_page)

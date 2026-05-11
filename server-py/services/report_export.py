@@ -28,6 +28,7 @@ from reportlab.platypus import (
 )
 from reportlab.lib import colors
 
+from lib.agency_branding import draw_letterhead, top_margin_for_branding
 from lib.reportlab_helpers import escape_html
 from models.report import Report
 
@@ -47,6 +48,12 @@ def _format_ai_programs(report: Report) -> str:
             bits.append(f"({prog.provider})")
         parts.append(" ".join(bits))
     return "; ".join(parts) or "AI program identification not recorded"
+
+
+def _draw_page_chrome(canvas, doc, report: Report):
+    """Letterhead at top, statutory footer at bottom — applied to every page."""
+    draw_letterhead(canvas)
+    _draw_footer(canvas, doc, report)
 
 
 def _draw_footer(canvas, doc, report: Report):
@@ -134,7 +141,7 @@ def export_report_pdf(report: Report, *, output_dir: str | None = None) -> str:
     doc = SimpleDocTemplate(
         path, pagesize=LETTER,
         leftMargin=0.75 * inch, rightMargin=0.75 * inch,
-        topMargin=0.75 * inch, bottomMargin=1.0 * inch,
+        topMargin=top_margin_for_branding(), bottomMargin=1.0 * inch,
         title=f"{report.title} (Cold Case Report {report.id})",
         author=signer,
         subject=f"Cold Case Report — {case_number} · Penal Code §13663 AI-assisted official report",
@@ -249,8 +256,8 @@ def export_report_pdf(report: Report, *, output_dir: str | None = None) -> str:
             story.append(Paragraph(escape_html(paragraph), body))
             story.append(Spacer(1, 6))
 
-    def _footer_cb(canvas, doc_):
-        _draw_footer(canvas, doc_, report)
+    def _page_cb(canvas, doc_):
+        _draw_page_chrome(canvas, doc_, report)
 
-    doc.build(story, onFirstPage=_footer_cb, onLaterPages=_footer_cb)
+    doc.build(story, onFirstPage=_page_cb, onLaterPages=_page_cb)
     return path

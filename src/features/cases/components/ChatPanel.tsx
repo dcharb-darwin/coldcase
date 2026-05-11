@@ -41,6 +41,22 @@ export default function ChatPanel({ caseId, documents, media, onPromote, onCitat
     }
   }, [conversations, activeConvId]);
 
+  // Programmatic conversation switch — fired by the Self-Review button
+  // (and any future "jump to this conversation" affordance). Decoupled
+  // via a CustomEvent so the launchers don't need to thread setState
+  // down through props.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const id = (e as CustomEvent).detail?.conversationId;
+      if (typeof id === "string") {
+        setActiveConvId(id);
+        qc.invalidateQueries({ queryKey: caseKeys.conversations(caseId) });
+      }
+    };
+    window.addEventListener("open-conversation", handler);
+    return () => window.removeEventListener("open-conversation", handler);
+  }, [caseId, qc]);
+
   const startMutation = useMutation({
     mutationFn: () => startConversation(caseId),
     onSuccess: (conv: Conversation) => {

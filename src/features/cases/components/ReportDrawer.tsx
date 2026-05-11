@@ -884,9 +884,91 @@ function DeliverPanel({
           {discoveryMut.error ? (
             <div className="text-xs text-red-700">{(discoveryMut.error as Error).message}</div>
           ) : null}
+
+          <EvidenceComHandoff report={report} />
         </div>
       )}
     </section>
+  );
+}
+
+function EvidenceComHandoff({ report }: { report: Report }) {
+  const [copied, setCopied] = useState<"" | "ref" | "url">("");
+  const sha = report.signature?.content_sha256 ?? "";
+  // Filename the agency would use when filing the AI output in evidence.com.
+  // Slugify the title down to ascii-safe characters so the filename stays
+  // portable across uploaders that reject spaces or unicode.
+  const titleSlug = report.title.toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "report";
+  const filename = `coldcase-${titleSlug}-${report.id.slice(-8)}.pdf`;
+  const pdfUrl = `${window.location.origin}${reportPdfUrl(report.id)}`;
+  // Pre-baked reference block the detective can paste into evidence.com's
+  // description field — covers what an auditor needs to tie the artifact
+  // back to its §13663 chain without opening Cold Case.
+  const reference = [
+    `Title: ${report.title}`,
+    `Report ID: ${report.id}`,
+    `Case ID: ${report.case_id}`,
+    `Status: ${report.status}`,
+    `Signed by: ${report.signature?.display_name ?? "(unsigned)"}`,
+    `Signed at: ${report.signature?.signed_at ?? ""}`,
+    `Content sha256: ${sha}`,
+    `AI program(s): ${report.ai_programs_used.map(p => `${p.name} ${p.version}`).join("; ")}`,
+    `Source: Cold Case §13663 workflow`,
+  ].join("\n");
+
+  const copy = async (text: string, which: "ref" | "url") => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(which);
+      setTimeout(() => setCopied(""), 2000);
+    } catch {
+      // clipboard API can be blocked; fall back to a prompt
+      window.prompt("Copy:", text);
+    }
+  };
+
+  return (
+    <div className="mt-3 pt-3 border-t border-slate-200">
+      <div className="text-[11px] uppercase tracking-wide font-semibold text-slate-700 mb-1">
+        Next: file in evidence.com
+      </div>
+      <div className="text-[11px] text-slate-600 mb-2 leading-snug">
+        Cold Case is the §13663 chain of custody. Your case-of-record still
+        lives in evidence.com — download the signed PDF and upload it there
+        with the reference block below.
+      </div>
+      <div className="space-y-1.5">
+        <a
+          href={reportPdfUrl(report.id)}
+          download={filename}
+          className="block w-full text-center px-2 py-1.5 text-xs rounded bg-slate-700 text-white hover:bg-slate-800"
+          title={`Download as ${filename}`}
+        >
+          ↓ Download "{filename}"
+        </a>
+        <button
+          type="button"
+          onClick={() => copy(reference, "ref")}
+          className="w-full px-2 py-1 text-[11px] rounded border border-slate-300 bg-white hover:bg-slate-50 text-slate-700"
+          title="Paste this into evidence.com's description field"
+        >
+          {copied === "ref" ? "✓ Copied reference" : "📋 Copy evidence.com reference"}
+        </button>
+        <button
+          type="button"
+          onClick={() => copy(pdfUrl, "url")}
+          className="w-full px-2 py-1 text-[11px] rounded border border-slate-300 bg-white hover:bg-slate-50 text-slate-700"
+          title="Permalink back to the signed PDF"
+        >
+          {copied === "url" ? "✓ Copied URL" : "🔗 Copy PDF permalink"}
+        </button>
+      </div>
+      <details className="mt-2">
+        <summary className="cursor-pointer text-[11px] text-slate-500">show reference</summary>
+        <pre className="mt-1 text-[10px] bg-slate-50 border border-slate-200 rounded p-2 whitespace-pre-wrap font-mono">{reference}</pre>
+      </details>
+    </div>
   );
 }
 

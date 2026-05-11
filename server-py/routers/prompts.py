@@ -88,16 +88,32 @@ SUGGESTIONS = [
     },
     {
         "id": "penal_code",
-        "label": "⚖️ Penal Code / CalCrim check",
+        "label": "⚖️ Penal Code / CalCrim candidates",
         "category": "legal",
-        "description": "Identify applicable California Penal Code sections and CalCrim instructions based on the facts.",
+        "description": "Identify CANDIDATE California Penal Code sections and CalCrim instructions. All section numbers and elements come back tagged [UNVERIFIED — officer must confirm against the current published code]. The LLM's legal references are not authoritative; treat as a starting point for your own lookup.",
         "template": (
-            "Based on the facts established in the documents in context "
-            "({docs}), identify the California Penal Code section(s) that "
-            "appear to apply and the CalCrim jury instruction number(s) "
-            "that would govern. For each, state the elements and which "
-            "facts in the documents support each element. If an element is "
-            "not yet supported by the record, say so."
+            "Identify CANDIDATE California Penal Code section(s) and "
+            "CalCrim jury instruction number(s) that may apply based on "
+            "the facts in the documents in context ({docs}).\n\n"
+            "CRITICAL CONSTRAINTS — read before responding:\n"
+            "1. You are NOT a legal reference. The California Penal Code "
+            "and CalCrim are amended frequently; section numbers and "
+            "element wording in your training data may be stale or wrong.\n"
+            "2. For EVERY section and instruction number you cite, append "
+            "the literal tag `[UNVERIFIED — officer must confirm against "
+            "the current published code]`.\n"
+            "3. Do NOT state element wording from memory. Instead, list "
+            "the GENERAL category (e.g., \"specific intent crime\", "
+            "\"general intent\", \"strict liability\") and which facts in "
+            "the documents would tend to support or undermine each "
+            "category. Cite the source document and line for every fact "
+            "claim using [src: filename, L<n>] or [src: filename, "
+            "p<page>, \"quote\"].\n"
+            "4. If the record does not yet support a category, say so "
+            "explicitly — do not fill the gap with assumed facts.\n\n"
+            "Format your response as a bulleted list of candidate "
+            "sections; the officer will verify each against the current "
+            "code before relying on it."
         ),
         "needs_document": True,
     },
@@ -111,6 +127,32 @@ SUGGESTIONS = [
             "factual inconsistencies, contradictions, or unresolved tensions "
             "between them. Quote the exact passages and identify each "
             "source. Do not assume motive; just identify the conflict."
+        ),
+        "needs_document": True,
+    },
+    {
+        "id": "self_review",
+        "label": "🪞 Review MY draft for gaps",
+        "category": "review",
+        "description": "Run the gaps/missing-elements pass against YOUR OWN draft narrative — the one you wrote in Word/etc. and uploaded as a document. Treats the named document as the officer-authored report under review, not a source.",
+        "template": (
+            "The document titled \"{doc}\" is THE DETECTIVE'S OWN DRAFT "
+            "REPORT — not patrol's report, not a witness statement. "
+            "Review it from three perspectives in order:\n\n"
+            "1. **Defense attorney** — what gaps, ambiguities, or "
+            "unsupported claims would they exploit? Quote the exact "
+            "language in the draft.\n"
+            "2. **Supervising sergeant** — what investigative steps are "
+            "missing (witnesses not interviewed, evidence not collected, "
+            "timeline holes)? Be concrete: name the step and what it "
+            "would establish.\n"
+            "3. **DA filing review** — what facts present in the other "
+            "case documents are NOT yet in this draft but should be, and "
+            "where in the draft would they go?\n\n"
+            "Format as three sections. Do NOT propose new wording — only "
+            "identify gaps. Cite every claim against the draft using "
+            "[src: \"{doc}\", L<n>] or against other case documents using "
+            "[src: <filename>, L<n>]. Do not invent facts."
         ),
         "needs_document": True,
     },

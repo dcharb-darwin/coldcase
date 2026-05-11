@@ -7,8 +7,10 @@ import {
   getDocumentText,
   getDocumentTextStatus,
   listConversations,
+  listPromptSuggestions,
   listReportsForCase,
   registerDocument,
+  sendMessage,
   uploadDocument,
   registerMedia,
   startConversation,
@@ -113,6 +115,9 @@ export default function CaseDetailPage({ caseId }: CaseDetailPageProps) {
         {c.description ? (
           <p className="text-sm text-slate-600 mt-2 max-w-4xl">{c.description}</p>
         ) : null}
+        <div className="mt-2">
+          <SelfReviewButton caseId={caseId} />
+        </div>
       </div>
 
       {/* Three panes */}
@@ -567,6 +572,81 @@ function RegisterMediaInline({ caseId, onDone }: { caseId: string; onDone: () =>
           Cancel
         </button>
       </div>
+    </div>
+  );
+}
+
+// ── Self-review of officer's own draft ──────────────────────────────────────
+//
+// One-button workflow: detective picks the file of their own draft narrative
+// (Word export, PDF, etc.), we upload it through the existing artifact path,
+// kick off a fresh conversation, send the `self_review` prompt scoped to JUST
+// the uploaded doc (so other case documents don't muddy the gaps analysis),
+// and surface the response in ChatPanel by dispatching an `open-conversation`
+// CustomEvent — keeps ChatPanel's internal state encapsulated.
+function SelfReviewButton({ caseId }: { caseId: string }) {
+  const qc = useQueryClient();
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [phase, setPhase] = useState<"" | "uploading" | "asking" | "error">("");
+  const [error, setError] = useState("");
+
+  const run = async (file: File) => {
+    try {
+      setError("");
+      setPhase("uploading");
+      const doc = await uploadDocument(caseId, file);
+      qc.invalidateQueries({ queryKey: caseKeys.detail(caseId) });
+
+      const promptCatalog = await listPromptSuggestions({
+        case_id: caseId, document_id: doc.id,
+      });
+      const tmpl = promptCatalog.suggestions.find((s) => s.id === "self_review");
+      if (!tmpl) throw new Error("self_review prompt not registered on server");
+
+      setPhase("asking");
+      const conv = await startConversation(caseId, `Self-review of ${doc.original_filename}`);
+      await sendMessage(conv.id, {
+        content: tmpl.rendered_prompt,
+        in_context_document_ids: [doc.id],
+      });
+      qc.invalidateQueries({ queryKey: caseKeys.conversations(caseId) });
+      window.dispatchEvent(
+        new CustomEvent("open-conversation", { detail: { conversationId: conv.id } }),
+      );
+      setPhase("");
+    } catch (e) {
+      setError((e as Error).message);
+      setPhase("error");
+    }
+  };
+
+  const busy = phase === "uploading" || phase === "asking";
+  return (
+    <div className="inline-flex items-center gap-2">
+      <button
+        type="button"
+        onClick={() => fileRef.current?.click()}
+        disabled={busy}
+        className="px-3 py-1.5 text-xs rounded bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 font-medium"
+        title="Upload your own draft narrative (Word export, PDF) — Cold Case runs a defense-attorney/sergeant/DA gaps pass against it. The draft is treated as the document under review, not as a source."
+      >
+        {phase === "uploading" ? "Uploading your draft…"
+          : phase === "asking" ? "Asking AI for gaps…"
+          : "🪞 Review my draft for gaps"}
+      </button>
+      <input
+        ref={fileRef}
+        type="file"
+        accept=".pdf,.txt,.md,.docx"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) run(f);
+          // Reset so the same file can be re-selected on a follow-up review.
+          if (fileRef.current) fileRef.current.value = "";
+        }}
+      />
+      {error ? <span className="text-xs text-red-700">{error}</span> : null}
     </div>
   );
 }

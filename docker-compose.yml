@@ -51,6 +51,13 @@ services:
       COLDCASE_LLM_MULTIMODAL: "${COLDCASE_LLM_MULTIMODAL:-false}"
       OLLAMA_BASE_URL: "${OLLAMA_BASE_URL:-http://host.docker.internal:11434}"
       COLDCASE_LLM_MODEL: "${COLDCASE_LLM_MODEL:-qwen3.6:35b-a3b-nvfp4}"
+      # Agency letterhead (Phase 4 / item A — leaving NAME blank disables it)
+      COLDCASE_AGENCY_NAME: "${COLDCASE_AGENCY_NAME:-}"
+      COLDCASE_AGENCY_JURISDICTION: "${COLDCASE_AGENCY_JURISDICTION:-}"
+      COLDCASE_AGENCY_ORI: "${COLDCASE_AGENCY_ORI:-}"
+      COLDCASE_AGENCY_ADDRESS: "${COLDCASE_AGENCY_ADDRESS:-}"
+      COLDCASE_AGENCY_PHONE: "${COLDCASE_AGENCY_PHONE:-}"
+      COLDCASE_AGENCY_LOGO_PATH: "${COLDCASE_AGENCY_LOGO_PATH:-}"
     volumes:
       # Hot-reload: bind-mount source so uvicorn --reload picks up changes.
       # The seeded PDFs live under ./server-py/uploads/ and persist naturally

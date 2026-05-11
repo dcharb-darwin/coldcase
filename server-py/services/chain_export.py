@@ -150,10 +150,11 @@ def export_chain_pdf(report: Report, *, output_dir: str | None = None) -> str:
 
     signer = report.signature.display_name or report.signature.user_id if report.signature else "—"
 
+    from lib.agency_branding import top_margin_for_branding
     pdf = SimpleDocTemplate(
         path, pagesize=LETTER,
         leftMargin=0.75 * inch, rightMargin=0.75 * inch,
-        topMargin=0.75 * inch, bottomMargin=1.05 * inch,
+        topMargin=top_margin_for_branding(), bottomMargin=1.05 * inch,
         title=f"Chain of Custody — Cold Case Report {report.id}",
         author=signer,
         subject="Cold Case Report — chain of custody (§13663(c) audit trail)",
@@ -384,6 +385,8 @@ def export_chain_pdf(report: Report, *, output_dir: str | None = None) -> str:
     ))
 
     def _on_page(canvas, doc_):
+        from lib.agency_branding import draw_letterhead
+        draw_letterhead(canvas)
         _draw_footer(canvas, doc_, report=report, chain_hash=chain_hash)
 
     pdf.build(story, onFirstPage=_on_page, onLaterPages=_on_page)

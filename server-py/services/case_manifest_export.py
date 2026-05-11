@@ -83,10 +83,11 @@ def export_case_manifest_pdf(case: Case, *, output_dir: str | None = None) -> st
     h2 = ParagraphStyle("h2", parent=styles["Heading2"], fontSize=11, leading=14,
                         textColor=colors.HexColor("#1e3a8a"), spaceBefore=10, spaceAfter=4)
 
+    from lib.agency_branding import top_margin_for_branding
     pdf = SimpleDocTemplate(
         path, pagesize=LETTER,
         leftMargin=0.75 * inch, rightMargin=0.75 * inch,
-        topMargin=0.75 * inch, bottomMargin=0.95 * inch,
+        topMargin=top_margin_for_branding(), bottomMargin=0.95 * inch,
         title=f"Case Audit Manifest — {case.case_number}",
         author="Cold Case (Darwin Launchpad)",
         subject="Cold Case — case audit manifest",
@@ -214,6 +215,8 @@ def export_case_manifest_pdf(case: Case, *, output_dir: str | None = None) -> st
     ))
 
     def _on_page(canvas, doc_):
+        from lib.agency_branding import draw_letterhead
+        draw_letterhead(canvas)
         _draw_footer(canvas, doc_, case)
 
     pdf.build(story, onFirstPage=_on_page, onLaterPages=_on_page)
