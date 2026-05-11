@@ -129,6 +129,7 @@ class Report(MEDocument):
 
     # Export
     exported_artifact_uri = StringField(default="")
+    chain_artifact_uri = StringField(default="")  # F7 chain-of-custody PDF, auto-paired
     export_target = StringField(default="")  # "evidence.com" | "file" | …
     exported_at = DateTimeField()
 
@@ -172,6 +173,7 @@ class Report(MEDocument):
                 for r in (self.revisions or [])
             ],
             "exported_artifact_uri": self.exported_artifact_uri,
+            "chain_artifact_uri": self.chain_artifact_uri,
             "export_target": self.export_target,
             "exported_at": self.exported_at.isoformat() if self.exported_at else None,
             "supersedes_report_id": self.supersedes_report_id,

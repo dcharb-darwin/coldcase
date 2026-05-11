@@ -30,6 +30,7 @@ class AuditEventType(str, Enum):
     REPORT_EXPORTED = "report.exported"
     APPROVAL_GIVEN = "approval.given"
     RETENTION_CHANGED = "retention.changed"
+    CASE_DISCOVERY_EXPORTED = "case.discovery_exported"
     VENDOR_ACCESS = "vendor.access"            # §13663(d) audit
     PURGE_BLOCKED = "purge.blocked"             # §13663(b) refused a purge
     FIRST_DRAFT_MUTATION_BLOCKED = "first_draft.mutation_blocked"

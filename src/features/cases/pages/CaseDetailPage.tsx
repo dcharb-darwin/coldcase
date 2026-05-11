@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  discoveryPackageDownloadUrl,
+  exportDiscoveryPackage,
   getCase,
   getDocumentText,
   getDocumentTextStatus,
@@ -204,6 +206,8 @@ export default function CaseDetailPage({ caseId }: CaseDetailPageProps) {
         onClose={() => setDrawer({ kind: "closed" })}
         onCitationClick={handleCitationClick}
       />
+
+      <CompliancePanel caseId={caseId} reports={reports} documents={documents} media={media} />
     </div>
   );
 }
@@ -227,6 +231,113 @@ function SidebarSection({
     </div>
   );
 }
+
+function CompliancePanel({
+  caseId,
+  reports,
+  documents,
+  media,
+}: {
+  caseId: string;
+  reports: Report[];
+  documents: Document[];
+  media: MediaInput[];
+}) {
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState("");
+  const [includeSourceBinaries, setIncludeSourceBinaries] = useState(false);
+  const signed = reports.filter((r) => r.status === "signed" || r.status === "exported");
+
+  const mut = useMutation({
+    mutationFn: () => exportDiscoveryPackage(caseId, {
+      reason,
+      include_source_binaries: includeSourceBinaries,
+    }),
+  });
+
+  return (
+    <div className="border-t border-slate-200 bg-slate-50 px-6 py-2 flex-shrink-0">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="text-xs text-slate-600 hover:text-slate-900 flex items-center gap-1"
+      >
+        <span>{open ? "▼" : "▶"}</span>
+        <span className="font-semibold">Compliance</span>
+        <span className="text-slate-500">— records-officer workflows, e.g. discovery export</span>
+      </button>
+      {open ? (
+        <div className="mt-2 p-3 bg-white border border-slate-200 rounded text-xs">
+          <div className="font-semibold mb-1">Export for discovery</div>
+          <p className="text-slate-600 mb-2">
+            Generate a hash-pinned ZIP containing every signed report ({signed.length}) + its §13663(c)
+            chain-of-custody PDF, plus pointer records for {documents.length} source document(s) and
+            {" "}{media.length} media input(s). For defense counsel, DA, or city-attorney handoff under
+            Penal Code §13663 / Brady disclosure.
+          </p>
+          <label className="block mb-2">
+            <span className="text-[11px] text-slate-600">Reason (recorded in the audit event)</span>
+            <input
+              className="mt-1 w-full border border-slate-300 rounded px-2 py-1 text-xs"
+              placeholder="e.g. Defense discovery motion 24-CV-001234"
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+            />
+          </label>
+          <label className="flex items-center gap-2 text-[11px] text-slate-700 mb-2">
+            <input
+              type="checkbox"
+              checked={includeSourceBinaries}
+              onChange={(e) => setIncludeSourceBinaries(e.target.checked)}
+            />
+            <span>
+              Include source-document binaries in the ZIP
+              <span className="text-slate-500"> (default off — customer storage is canonical;
+                only enable when the recipient cannot pull from the customer's primary storage)</span>
+            </span>
+          </label>
+          {mut.error ? (
+            <div className="text-red-700">{(mut.error as Error).message}</div>
+          ) : null}
+          {mut.data ? (
+            <div className="mt-2 p-2 rounded border border-emerald-200 bg-emerald-50 text-emerald-900">
+              <div>
+                ✓ Discovery package ready: {mut.data.file_count} files, {Math.round(mut.data.zip_size_bytes / 1024)} KB
+              </div>
+              <div className="font-mono text-[10px] mt-1">
+                manifest_sha256: {mut.data.manifest_sha256.slice(0, 24)}…
+              </div>
+              <a
+                href={discoveryPackageDownloadUrl(caseId, mut.data.zip_filename)}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-block mt-2 px-2 py-1 rounded bg-emerald-600 text-white"
+              >
+                Download {mut.data.zip_filename} ↗
+              </a>
+            </div>
+          ) : null}
+          <div className="mt-2 flex justify-end">
+            <button
+              type="button"
+              disabled={mut.isPending || !reason.trim() || signed.length === 0}
+              onClick={() => mut.mutate()}
+              className="px-3 py-1.5 text-xs rounded bg-blue-600 text-white disabled:opacity-50"
+            >
+              {mut.isPending ? "Assembling ZIP…" : "Export for discovery"}
+            </button>
+          </div>
+          {signed.length === 0 ? (
+            <div className="mt-2 text-[11px] text-slate-500 italic">
+              No signed reports yet — export is disabled until at least one official report is signed.
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 
 function ExtractionBadge({ caseId, documentId }: { caseId: string; documentId: string }) {
   const { data } = useQuery({

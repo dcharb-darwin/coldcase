@@ -4,7 +4,10 @@ import {
   editReport,
   exportReport,
   getReport,
+  getReportDiff,
   promoteMessageToReport,
+  reportChainPdfUrl,
+  reportDiffPdfUrl,
   reportPdfUrl,
   signReport,
   type Message,
@@ -331,6 +334,9 @@ function ReportEditor({
         </ol>
       </details>
 
+      {/* F9 — Officer's Editorial Work (diff between AI first draft and signed text) */}
+      <EditorialWorkAccordion report={report} onCitationClick={onCitationClick} />
+
       {/* Signature block */}
       <div className="rounded border border-slate-200 p-3 mb-4 text-sm">
         <div className="font-semibold mb-2">§13663(a)(2) — Officer attestation</div>
@@ -410,14 +416,26 @@ function ReportEditor({
           </button>
         ) : null}
         {report.status === "exported" ? (
-          <a
-            href={reportPdfUrl(report.id)}
-            target="_blank"
-            rel="noreferrer"
-            className="px-3 py-1.5 text-sm rounded bg-blue-600 text-white hover:bg-blue-700"
-          >
-            View signed PDF ↗
-          </a>
+          <>
+            <a
+              href={reportPdfUrl(report.id)}
+              target="_blank"
+              rel="noreferrer"
+              className="px-3 py-1.5 text-sm rounded bg-blue-600 text-white hover:bg-blue-700"
+              title="Your official report — goes in the case file."
+            >
+              📄 Signed report ↗
+            </a>
+            <a
+              href={reportChainPdfUrl(report.id)}
+              target="_blank"
+              rel="noreferrer"
+              className="px-3 py-1.5 text-sm rounded bg-amber-600 text-white hover:bg-amber-700"
+              title="§13663(c) chain-of-custody audit trail — for legal review, not the case file."
+            >
+              🔎 Audit trail ↗
+            </a>
+          </>
         ) : null}
         <button type="button" onClick={onClose} className="px-3 py-1.5 text-sm rounded border border-slate-300">
           Close
@@ -426,6 +444,70 @@ function ReportEditor({
     </div>
   );
 }
+
+function EditorialWorkAccordion({
+  report,
+  onCitationClick,
+}: {
+  report: Report;
+  onCitationClick: (filename: string, line: number) => void;
+}) {
+  void onCitationClick;
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["report-diff", report.id, report.signed_at],
+    queryFn: () => getReportDiff(report.id),
+    enabled: !!report.id,
+  });
+
+  return (
+    <details className="mb-4 rounded border border-blue-200 bg-blue-50/40 p-3 text-xs">
+      <summary className="cursor-pointer font-semibold text-blue-900">
+        Officer's editorial work — what you changed from the AI's first draft
+      </summary>
+      <div className="mt-2 text-[11px] text-blue-900/90 italic">
+        Removing unsupported claims, verifying facts, and improving clarity are your
+        professional responsibilities. The AI is a tool. Your signature means you
+        reviewed everything and stand behind every claim that remained.
+      </div>
+      {isLoading ? <div className="mt-2 text-slate-500">Computing diff…</div> : null}
+      {error ? <div className="mt-2 text-red-700">{(error as Error).message}</div> : null}
+      {data ? (
+        <>
+          <div className="mt-3 text-[11px] text-slate-700">
+            Similarity: <strong>{(data.stats.similarity_ratio * 100).toFixed(1)}%</strong>
+            {" · "}Compared against: <em>{data.compared_to_label}</em>
+          </div>
+          {data.stats.no_edits ? (
+            <div className="mt-2 px-2 py-1.5 rounded border border-emerald-200 bg-emerald-50 text-emerald-900">
+              Officer signed the AI's first draft verbatim — no edits.
+            </div>
+          ) : (
+            <div className="mt-3 text-sm leading-relaxed whitespace-pre-wrap p-3 rounded border border-slate-200 bg-white max-h-96 overflow-y-auto">
+              {data.segments.map((seg, i) => {
+                if (seg.op === "equal") {
+                  return <span key={i} className="text-slate-600">{seg.text} </span>;
+                }
+                if (seg.op === "officer_added") {
+                  return <u key={i} className="text-blue-800">{seg.text} </u>;
+                }
+                return <s key={i} className="text-slate-400">{seg.text} </s>;
+              })}
+            </div>
+          )}
+          <a
+            href={reportDiffPdfUrl(report.id)}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-block mt-3 px-2 py-1 text-xs rounded border border-blue-300 bg-white hover:bg-blue-100 text-blue-800"
+          >
+            Download editorial-work PDF ↗
+          </a>
+        </>
+      ) : null}
+    </details>
+  );
+}
+
 
 function StatusBadge({ status }: { status: Report["status"] }) {
   const map: Record<Report["status"], string> = {

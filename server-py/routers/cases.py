@@ -320,3 +320,65 @@ def list_media(case_id: str, user: CurrentUser = Depends(current_user)):
         raise HTTPException(404, "Case not found")
     media = MediaInput.objects(case=case).order_by("-registered_at")
     return {"media": [m.to_dict() for m in media]}
+
+
+# ── F8 — Discovery Package ──────────────────────────────────────────────────
+
+
+class DiscoveryPackageBody(BaseModel):
+    reason: str = Field(min_length=1, max_length=300)
+    report_ids: list[str] = Field(default_factory=list)
+    include_source_binaries: bool = False
+
+
+@router.post("/{case_id}/discovery-package", status_code=201)
+def export_discovery_package(case_id: str, body: DiscoveryPackageBody, user: CurrentUser = Depends(current_user)):
+    """F8 — one-click discovery bundle. Records-officer / city-attorney
+    workflow, gated by `case.export` in production (MVP: open to all
+    authenticated users with case access)."""
+    case = Case.objects(id=case_id, tenant_id=user.tenant_id).first()
+    if not case:
+        raise HTTPException(404, "Case not found")
+
+    from services.discovery_package import build_discovery_zip
+    result = build_discovery_zip(
+        case,
+        requesting_user_id=user.user_id,
+        requesting_user_display=user.display_name or user.user_id,
+        reason=body.reason,
+        report_ids=body.report_ids or None,
+        include_source_binaries=body.include_source_binaries,
+    )
+
+    case_audit.log(
+        tenant_id=user.tenant_id, user_id=user.user_id,
+        user_display=user.display_name, ip_address=user.ip_address,
+        event_type=AuditEventType.CASE_DISCOVERY_EXPORTED,
+        case_id=str(case.id),
+        summary=f"Discovery package exported ({result['report_count']} reports, {result['file_count']} files)",
+        detail={
+            "reason": body.reason,
+            "report_ids": body.report_ids,
+            "manifest_sha256": result["manifest_sha256"],
+            "zip_sha256": result["zip_sha256"],
+            "zip_size_bytes": result["zip_size_bytes"],
+            "include_source_binaries": body.include_source_binaries,
+        },
+    )
+    return result
+
+
+@router.get("/{case_id}/discovery-package/{zip_filename}")
+def download_discovery_package(case_id: str, zip_filename: str, user: CurrentUser = Depends(current_user)):
+    """Stream a previously-generated discovery ZIP. In production this is
+    replaced by a customer-storage signed URL with 1h TTL (rule #21)."""
+    import os
+    case = Case.objects(id=case_id, tenant_id=user.tenant_id).first()
+    if not case:
+        raise HTTPException(404, "Case not found")
+    upload_dir = os.environ.get("UPLOAD_DIRECTORY", "./uploads")
+    path = os.path.join(upload_dir, "discovery", zip_filename)
+    if not os.path.exists(path) or "/" in zip_filename or ".." in zip_filename:
+        raise HTTPException(404, "Discovery package not found")
+    from fastapi.responses import FileResponse
+    return FileResponse(path, media_type="application/zip", filename=zip_filename)

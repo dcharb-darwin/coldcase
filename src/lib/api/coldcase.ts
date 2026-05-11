@@ -330,6 +330,73 @@ export function reportPdfUrl(id: string): string {
   return `${API_BASE_URL}/reports/${id}/pdf`;
 }
 
+// F7 — Chain-of-Custody PDF (auto-paired with signed report on export).
+export function reportChainPdfUrl(id: string): string {
+  return `${API_BASE_URL}/reports/${id}/chain.pdf`;
+}
+
+// F9 — Officer's Editorial Work diff (PDF view).
+export function reportDiffPdfUrl(id: string): string {
+  return `${API_BASE_URL}/reports/${id}/diff.pdf`;
+}
+
+export interface DiffSegment {
+  op: "equal" | "officer_added" | "ai_wrote_removed";
+  text: string;
+}
+
+export interface ReportDiff {
+  report_id: string;
+  first_ai_draft: string;
+  compared_to: string;
+  compared_to_label: string;
+  segments: DiffSegment[];
+  stats: {
+    ai_first_chars: number;
+    compared_to_chars: number;
+    similarity_ratio: number;
+    no_edits: boolean;
+  };
+}
+
+export async function getReportDiff(id: string): Promise<ReportDiff> {
+  const { data } = await http.get<ReportDiff>(`/reports/${id}/diff`);
+  return data;
+}
+
+// F8 — Discovery Package
+export interface DiscoveryPackage {
+  case_id: string;
+  case_number: string;
+  zip_filename: string;
+  zip_uri: string;
+  zip_sha256: string;
+  zip_size_bytes: number;
+  manifest_sha256: string;
+  file_count: number;
+  report_count: number;
+  document_count: number;
+  media_count: number;
+  include_source_binaries: boolean;
+}
+
+export async function exportDiscoveryPackage(caseId: string, body: {
+  reason: string;
+  report_ids?: string[];
+  include_source_binaries?: boolean;
+}): Promise<DiscoveryPackage> {
+  const { data } = await http.post<DiscoveryPackage>(
+    `/cases/${caseId}/discovery-package`,
+    body,
+    { timeout: 180_000 },
+  );
+  return data;
+}
+
+export function discoveryPackageDownloadUrl(caseId: string, zipFilename: string): string {
+  return `${API_BASE_URL}/cases/${caseId}/discovery-package/${encodeURIComponent(zipFilename)}`;
+}
+
 // ── Audit ──────────────────────────────────────────────────────────────────
 
 export async function getReportChain(reportId: string): Promise<{

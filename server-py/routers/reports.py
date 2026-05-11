@@ -10,6 +10,7 @@ This router implements the §13663 path. Key invariants enforced here:
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from typing import Optional
 
@@ -26,6 +27,8 @@ from models.report import (
 )
 from routers._deps import CurrentUser, current_user
 from services import case_audit
+from services.chain_export import export_chain_pdf
+from services.diff_export import compute_diff, export_diff_pdf
 from services.report_export import export_report_pdf
 
 
@@ -278,7 +281,12 @@ def export_report(report_id: str, body: ExportBody, user: CurrentUser = Depends(
         raise HTTPException(501, "evidence.com integration is Phase 2 — use target=file for now")
 
     pdf_path = export_report_pdf(report)
+    # F7 — auto-pair the chain-of-custody PDF on every export. Both PDFs
+    # travel together so the §13663(c) audit trail is never separated from
+    # the §13663(a) signed report.
+    chain_path = export_chain_pdf(report)
     report.exported_artifact_uri = f"file://{pdf_path}"
+    report.chain_artifact_uri = f"file://{chain_path}"
     report.export_target = body.target
     report.exported_at = datetime.utcnow()
     report.status = ReportStatus.EXPORTED.value
@@ -306,6 +314,60 @@ def download_report_pdf(report_id: str, user: CurrentUser = Depends(current_user
         raise HTTPException(409, "Report has not been exported yet")
     path = get_document_storage_provider().resolve_path(report.exported_artifact_uri)
     return FileResponse(path, media_type="application/pdf", filename=f"{report.title or report.id}.pdf")
+
+
+@router.get("/{report_id}/chain.pdf")
+def download_chain_pdf(report_id: str, user: CurrentUser = Depends(current_user)):
+    """F7 — Chain-of-Custody PDF (§13663(c) audit trail). Auto-generated on
+    every /export and re-derivable on demand. The companion artifact to
+    /pdf — they travel as a pair."""
+    from providers.document_storage import get_document_storage_provider
+    report = Report.objects(id=report_id, tenant_id=user.tenant_id).first()
+    if not report:
+        raise HTTPException(404, "Report not found")
+    if not report.signature:
+        raise HTTPException(409, "Report is not yet signed — chain export requires a signed report")
+    if report.chain_artifact_uri:
+        path = get_document_storage_provider().resolve_path(report.chain_artifact_uri)
+        if os.path.exists(path):
+            return FileResponse(path, media_type="application/pdf",
+                                filename=f"{report.title or report.id}.chain.pdf")
+    # Regenerate on demand if missing (e.g. signed but never exported, or
+    # the chain artifact was deleted).
+    path = export_chain_pdf(report)
+    report.chain_artifact_uri = f"file://{path}"
+    report.save()
+    return FileResponse(path, media_type="application/pdf",
+                        filename=f"{report.title or report.id}.chain.pdf")
+
+
+@router.get("/{report_id}/diff")
+def get_report_diff(
+    report_id: str,
+    against_seq: int | None = None,
+    user: CurrentUser = Depends(current_user),
+):
+    """F9 — Officer's editorial work. JSON diff between the §13663(b) first
+    AI draft and the signed text (or any revision via ?against_seq=)."""
+    report = Report.objects(id=report_id, tenant_id=user.tenant_id).first()
+    if not report:
+        raise HTTPException(404, "Report not found")
+    try:
+        return compute_diff(report, against_seq=against_seq)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+
+
+@router.get("/{report_id}/diff.pdf")
+def download_report_diff_pdf(report_id: str, user: CurrentUser = Depends(current_user)):
+    """F9 — Officer's editorial work, as a printable PDF."""
+    from fastapi.responses import FileResponse as _FR
+    report = Report.objects(id=report_id, tenant_id=user.tenant_id).first()
+    if not report:
+        raise HTTPException(404, "Report not found")
+    path = export_diff_pdf(report)
+    return _FR(path, media_type="application/pdf",
+               filename=f"{report.title or report.id}.diff.pdf")
 
 
 @router.get("/cases/{case_id}/reports")
