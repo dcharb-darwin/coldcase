@@ -31,7 +31,6 @@ class AuditEventType(str, Enum):
     APPROVAL_GIVEN = "approval.given"
     RETENTION_CHANGED = "retention.changed"
     CASE_DISCOVERY_EXPORTED = "case.discovery_exported"
-    VENDOR_ACCESS = "vendor.access"            # generic §13663(d) audit (legacy)
     VENDOR_ACCESS_REQUESTED = "vendor.access.requested"
     VENDOR_ACCESS_APPROVED = "vendor.access.approved"
     VENDOR_ACCESS_DENIED = "vendor.access.denied"

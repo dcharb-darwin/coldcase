@@ -370,13 +370,29 @@ def export_discovery_package(case_id: str, body: DiscoveryPackageBody, user: Cur
 
 @router.get("/{case_id}/audit-manifest.pdf")
 def download_case_audit_manifest(case_id: str, user: CurrentUser = Depends(current_user)):
-    """F15 — Per-case audit manifest PDF. Sibling to F7 (per-report chain)."""
+    """F15 — Per-case audit manifest PDF. Sibling to F7 (per-report chain).
+    Cached on disk; regenerated only if the case has had activity since the
+    cached file was written."""
+    import os
+    from datetime import datetime
     from fastapi.responses import FileResponse
     from services.case_manifest_export import export_case_manifest_pdf
+
     case = Case.objects(id=case_id, tenant_id=user.tenant_id).first()
     if not case:
         raise HTTPException(404, "Case not found")
-    path = export_case_manifest_pdf(case)
+
+    cached_path = os.path.join(
+        os.environ.get("UPLOAD_DIRECTORY", "./uploads"), "manifests",
+        f"{case.id}.manifest.pdf",
+    )
+    fresh = False
+    if os.path.exists(cached_path):
+        mtime = datetime.utcfromtimestamp(os.path.getmtime(cached_path))
+        if case.last_activity_at and case.last_activity_at <= mtime:
+            fresh = True
+
+    path = cached_path if fresh else export_case_manifest_pdf(case)
     return FileResponse(path, media_type="application/pdf",
                         filename=f"{case.case_number}.audit-manifest.pdf")
 

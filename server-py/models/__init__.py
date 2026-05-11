@@ -9,7 +9,7 @@ from models.report import Report, ReportStatus
 from models.approval import Approval
 from models.audit_event import AuditEvent, AuditEventType
 from models.vendor_access import (
-    VendorAccessRequest, VendorAccessPurpose, VendorAccessStatus,
+    VendorAccessRequest, VendorAccessPurpose, VendorAccessScopeKind, VendorAccessStatus,
 )
 
 __all__ = [
@@ -21,5 +21,5 @@ __all__ = [
     "Report", "ReportStatus",
     "Approval",
     "AuditEvent", "AuditEventType",
-    "VendorAccessRequest", "VendorAccessPurpose", "VendorAccessStatus",
+    "VendorAccessRequest", "VendorAccessPurpose", "VendorAccessScopeKind", "VendorAccessStatus",
 ]

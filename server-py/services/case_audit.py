@@ -12,6 +12,21 @@ from typing import Any
 from models.audit_event import AuditEvent, AuditEventType
 
 
+def log_user_event(user, /, *, event_type: AuditEventType, **kwargs) -> AuditEvent:
+    """Convenience wrapper that pulls tenant_id / user_id / user_display /
+    ip_address off the resolved `CurrentUser` so callers don't restate them.
+    All other `log()` kwargs (summary, detail, case_id, report_id, ...) pass through.
+    """
+    return log(
+        tenant_id=user.tenant_id,
+        user_id=user.user_id,
+        user_display=user.display_name,
+        ip_address=user.ip_address,
+        event_type=event_type,
+        **kwargs,
+    )
+
+
 def log(
     *,
     tenant_id: str,

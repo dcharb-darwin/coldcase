@@ -11,7 +11,7 @@ This is the software enforcement of business rule #23.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from enum import Enum
 
 from mongoengine import (
@@ -35,6 +35,12 @@ class VendorAccessStatus(str, Enum):
     REVOKED = "revoked"
 
 
+class VendorAccessScopeKind(str, Enum):
+    TENANT_WIDE = "tenant_wide"
+    CASE_IDS = "case_ids"
+    REPORT_IDS = "report_ids"
+
+
 class VendorAccessRequest(MEDocument):
     meta = {
         "collection": "vendor_access_requests",
@@ -54,7 +60,7 @@ class VendorAccessRequest(MEDocument):
     purpose = StringField(required=True, choices=[p.value for p in VendorAccessPurpose])
     reason_detail = StringField(required=True)  # free text
 
-    scope_kind = StringField(required=True, choices=["tenant_wide", "case_ids", "report_ids"])
+    scope_kind = StringField(required=True, choices=[s.value for s in VendorAccessScopeKind])
     scope_case_ids = ListField(StringField(), default=list)
     scope_report_ids = ListField(StringField(), default=list)
 
@@ -104,5 +110,3 @@ class VendorAccessRequest(MEDocument):
         }
 
 
-def expires_default(hours: int = 24) -> datetime:
-    return datetime.utcnow() + timedelta(hours=hours)

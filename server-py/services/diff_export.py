@@ -25,6 +25,7 @@ from reportlab.platypus import (
     Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle,
 )
 
+from lib.reportlab_helpers import escape_html
 from models.report import Report
 
 
@@ -209,7 +210,7 @@ def export_diff_pdf(report: Report, *, output_dir: str | None = None) -> str:
         story.append(Paragraph("Edits", h2))
         merged_html: list[str] = []
         for seg in diff["segments"]:
-            text = _escape(seg["text"])
+            text = escape_html(seg["text"])
             if not text:
                 continue
             if seg["op"] == "equal":
@@ -227,10 +228,3 @@ def export_diff_pdf(report: Report, *, output_dir: str | None = None) -> str:
     return path
 
 
-def _escape(text: str) -> str:
-    return (
-        (text or "")
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )

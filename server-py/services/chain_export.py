@@ -26,7 +26,6 @@ bound to the Report.
 from __future__ import annotations
 
 import os
-import re
 from datetime import datetime
 from typing import Any
 
@@ -39,7 +38,9 @@ from reportlab.platypus import (
     Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle, PageBreak,
 )
 
+from lib.citations import citation_coverage
 from lib.hash import hash_text
+from lib.reportlab_helpers import escape_html
 from models.audit_event import AuditEvent
 from models.case import Case
 from models.conversation import Conversation
@@ -47,12 +48,6 @@ from models.message import Message
 from models.media_input import MediaInput
 from models import Document
 from models.report import Report
-
-
-_CITATION_RE = re.compile(
-    r"\[src:\s*[^,\]]+?\s*,\s*(?:L\s*\d+|p\s*\d+\s*,\s*\"[^\"]+\")\s*\]",
-    re.IGNORECASE,
-)
 
 
 def chain_audit_hash(report: Report, messages: list[Message]) -> str:
@@ -73,23 +68,6 @@ def chain_audit_hash(report: Report, messages: list[Message]) -> str:
     return hash_text("|".join(parts))
 
 
-def _citation_coverage(report: Report) -> dict:
-    """Count citation density in the signed text.
-    Paragraphs without a [src: ...] token are flagged as "unsourced".
-    """
-    text = report.final_text or ""
-    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
-    sourced = 0
-    for p in paragraphs:
-        if _CITATION_RE.search(p):
-            sourced += 1
-    total = len(paragraphs)
-    return {
-        "paragraphs": total,
-        "with_citations": sourced,
-        "unsourced": total - sourced,
-        "coverage_pct": round((sourced / total) * 100, 1) if total else 0.0,
-    }
 
 
 def _draw_footer(canvas, doc, *, report: Report, chain_hash: str):
@@ -145,7 +123,7 @@ def export_chain_pdf(report: Report, *, output_dir: str | None = None) -> str:
     audit_events = list(AuditEvent.objects(report_id=str(report.id)).order_by("timestamp"))
 
     chain_hash = chain_audit_hash(report, messages)
-    coverage = _citation_coverage(report)
+    coverage = citation_coverage(report.final_text)
 
     styles = getSampleStyleSheet()
     body = ParagraphStyle("body", parent=styles["BodyText"], fontSize=9.5, leading=12.5, alignment=TA_LEFT)
@@ -292,7 +270,7 @@ def export_chain_pdf(report: Report, *, output_dir: str | None = None) -> str:
         ts = m.timestamp.isoformat() if m.timestamp else ""
         if m.role == "user":
             story.append(Paragraph(f"<b>USER</b> · {ts} · {m.user_id}", body))
-            story.append(Paragraph(_escape(m.content), user_bubble))
+            story.append(Paragraph(escape_html(m.content), user_bubble))
         else:
             flags = []
             if m.is_first_ai_draft and str(m.id) == report.first_ai_draft_message_id:
@@ -312,7 +290,7 @@ def export_chain_pdf(report: Report, *, output_dir: str | None = None) -> str:
                     "See §13663(c) audit consequences in the appendix.",
                     refusal_red,
                 ))
-            story.append(Paragraph(_escape(m.content), assistant_bubble))
+            story.append(Paragraph(escape_html(m.content), assistant_bubble))
 
     # ── 5. First AI draft (§13663(b)) ───────────────────────────────
     story.append(PageBreak())
@@ -323,7 +301,7 @@ def export_chain_pdf(report: Report, *, output_dir: str | None = None) -> str:
         "Penal Code §13663(b). It is NOT an officer statement.</b>",
         note_amber,
     ))
-    story.append(Paragraph(_escape(report.first_ai_draft_text_snapshot or ""), body_mono))
+    story.append(Paragraph(escape_html(report.first_ai_draft_text_snapshot or ""), body_mono))
 
     # ── 6. Revisions ────────────────────────────────────────────────
     story.append(PageBreak())
@@ -412,12 +390,3 @@ def export_chain_pdf(report: Report, *, output_dir: str | None = None) -> str:
     return path
 
 
-def _escape(text: str) -> str:
-    """Make a string safe for ReportLab's mini-HTML paragraph parser."""
-    return (
-        (text or "")
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace("\n", "<br/>")
-    )

@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from models import (
-    VendorAccessPurpose, VendorAccessRequest, VendorAccessStatus,
+    VendorAccessPurpose, VendorAccessRequest, VendorAccessScopeKind, VendorAccessStatus,
 )
 from models.audit_event import AuditEventType
 from routers._deps import CurrentUser, current_user
@@ -33,10 +33,12 @@ router = APIRouter(prefix="/vendor/access-requests", tags=["Vendor access"])
 
 
 class OpenRequestBody(BaseModel):
-    tenant_id: Optional[str] = None  # default: requester's tenant
+    # tenant_id is NOT accepted from the client — it's always derived from
+    # the authenticated user. Letting clients set it would let one tenant
+    # open access requests against another tenant's data.
     purpose: VendorAccessPurpose
     reason_detail: str = Field(min_length=10, max_length=2000)
-    scope_kind: str = Field(pattern="^(tenant_wide|case_ids|report_ids)$")
+    scope_kind: VendorAccessScopeKind
     scope_case_ids: list[str] = Field(default_factory=list)
     scope_report_ids: list[str] = Field(default_factory=list)
     expires_in_hours: int = Field(default=24, ge=1, le=168)  # 1h to 7d
@@ -73,30 +75,28 @@ def _auto_expire_if_due(req: VendorAccessRequest) -> None:
 
 @router.post("", status_code=201)
 def open_request(body: OpenRequestBody, user: CurrentUser = Depends(current_user)):
-    tenant_id = body.tenant_id or user.tenant_id
     expires_at = datetime.utcnow() + timedelta(hours=body.expires_in_hours)
     req = VendorAccessRequest(
-        tenant_id=tenant_id,
+        tenant_id=user.tenant_id,
         requesting_operator_id=user.user_id,
         requesting_operator_display=user.display_name or user.user_id,
         purpose=body.purpose.value,
         reason_detail=body.reason_detail,
-        scope_kind=body.scope_kind,
+        scope_kind=body.scope_kind.value,
         scope_case_ids=body.scope_case_ids,
         scope_report_ids=body.scope_report_ids,
         expires_at=expires_at,
         status=VendorAccessStatus.PENDING.value,
     ).save()
-    case_audit.log(
-        tenant_id=tenant_id, user_id=user.user_id, user_display=user.display_name,
-        ip_address=user.ip_address,
+    case_audit.log_user_event(
+        user,
         event_type=AuditEventType.VENDOR_ACCESS_REQUESTED,
-        summary=f"Vendor access requested ({body.purpose.value}, {body.scope_kind})",
+        summary=f"Vendor access requested ({body.purpose.value}, {body.scope_kind.value})",
         detail={
             "request_id": str(req.id),
             "purpose": body.purpose.value,
             "reason_detail": body.reason_detail[:200],
-            "scope_kind": body.scope_kind,
+            "scope_kind": body.scope_kind.value,
             "scope_case_ids": body.scope_case_ids,
             "scope_report_ids": body.scope_report_ids,
             "expires_at": expires_at.isoformat(),
@@ -144,9 +144,8 @@ def approve_request(request_id: str, user: CurrentUser = Depends(current_user)):
     req.approved_by = user.user_id
     req.approved_at = now
     req.save()
-    case_audit.log(
-        tenant_id=req.tenant_id, user_id=user.user_id, user_display=user.display_name,
-        ip_address=user.ip_address,
+    case_audit.log_user_event(
+        user,
         event_type=AuditEventType.VENDOR_ACCESS_APPROVED,
         summary=f"Vendor access approved (req {req.id})",
         detail={"request_id": str(req.id), "purpose": req.purpose, "expires_at": req.expires_at.isoformat()},
@@ -167,9 +166,8 @@ def deny_request(request_id: str, body: DenyBody, user: CurrentUser = Depends(cu
     req.denied_at = now
     req.denial_reason = body.denial_reason
     req.save()
-    case_audit.log(
-        tenant_id=req.tenant_id, user_id=user.user_id, user_display=user.display_name,
-        ip_address=user.ip_address,
+    case_audit.log_user_event(
+        user,
         event_type=AuditEventType.VENDOR_ACCESS_DENIED,
         summary=f"Vendor access denied (req {req.id}): {body.denial_reason[:100]}",
         detail={"request_id": str(req.id), "denial_reason": body.denial_reason},
@@ -189,9 +187,8 @@ def revoke_request(request_id: str, body: RevokeBody, user: CurrentUser = Depend
     req.revoked_by = user.user_id
     req.revoked_at = now
     req.save()
-    case_audit.log(
-        tenant_id=req.tenant_id, user_id=user.user_id, user_display=user.display_name,
-        ip_address=user.ip_address,
+    case_audit.log_user_event(
+        user,
         event_type=AuditEventType.VENDOR_ACCESS_REVOKED,
         summary=f"Vendor access revoked (req {req.id}): {body.reason[:100]}",
         detail={"request_id": str(req.id), "reason": body.reason},
@@ -224,9 +221,8 @@ def record_access(request_id: str, body: RecordAccessBody, user: CurrentUser = D
     })
     req.use_count += 1
     req.save()
-    case_audit.log(
-        tenant_id=req.tenant_id, user_id=user.user_id, user_display=user.display_name,
-        ip_address=user.ip_address,
+    case_audit.log_user_event(
+        user,
         event_type=AuditEventType.VENDOR_ACCESS_USED,
         summary=f"Vendor access used (req {req.id}, note: {body.note[:80]})",
         detail={

@@ -103,11 +103,12 @@ def anomalies_report(
         despite documents being supplied (refusal_detected=true)
       - vendor.access events from the F10 Vendor Access Portal
     """
-    # Refusals — look for the flag in the audit event detail, then enrich
-    # from the underlying Message for display.
+    # Refusals — Mongo-side filter on detail.refusal_detected so we don't
+    # over-fetch and Python-filter.
     event_q = AuditEvent.objects(
         tenant_id=user.tenant_id,
         event_type="message.assistant",
+        detail__refusal_detected=True,
     )
     if since:
         event_q = event_q.filter(timestamp__gte=since)
@@ -115,9 +116,7 @@ def anomalies_report(
         event_q = event_q.filter(timestamp__lte=until)
 
     refusal_rows: list[dict] = []
-    for e in event_q.order_by("-timestamp").limit(limit * 4):
-        if not (e.detail or {}).get("refusal_detected"):
-            continue
+    for e in event_q.order_by("-timestamp").limit(limit):
         msg = Message.objects(id=e.message_id).first() if e.message_id else None
         refusal_rows.append({
             "timestamp": e.timestamp.isoformat() if e.timestamp else None,
