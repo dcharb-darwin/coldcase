@@ -11,7 +11,7 @@ from datetime import datetime
 from enum import Enum
 
 from mongoengine import (
-    Document as MEDocument, StringField, DateTimeField, ListField,
+    Document as MEDocument, StringField, DateTimeField, ListField, IntField,
     ReferenceField, DictField, BooleanField, EmbeddedDocument, EmbeddedDocumentField,
 )
 
@@ -33,6 +33,19 @@ class AIProgram(EmbeddedDocument):
     name = StringField(required=True)       # e.g. "GCC Copilot"
     version = StringField(default="")        # e.g. "gpt-4o-2024-08-06" or vendor build id
     provider = StringField(default="")       # e.g. "Microsoft 365 Copilot (GCC)"
+
+
+class ReportRevision(EmbeddedDocument):
+    """Append-only revision snapshot. Created on every PATCH and on initial
+    promote. The first revision (`seq=0`) is the verbatim AI first draft."""
+    seq = IntField(required=True)
+    text = StringField(required=True)
+    editor_id = StringField(required=True)
+    editor_display = StringField(default="")
+    timestamp = DateTimeField(required=True)
+    content_sha256 = StringField(required=True)
+    byte_count = IntField(default=0)
+    note = StringField(default="")  # optional human note, e.g. "promoted from AI" / "officer edit"
 
 
 class OfficerSignature(EmbeddedDocument):
@@ -87,6 +100,9 @@ class Report(MEDocument):
 
     signature = EmbeddedDocumentField(OfficerSignature)
 
+    # Append-only edit history. seq=0 is the verbatim AI first draft.
+    revisions = ListField(EmbeddedDocumentField(ReportRevision), default=list)
+
     # Export
     exported_artifact_uri = StringField(default="")
     export_target = StringField(default="")  # "evidence.com" | "file" | …
@@ -125,6 +141,23 @@ class Report(MEDocument):
                 }
                 if self.signature else None
             ),
+            "revisions": [
+                {
+                    "seq": r.seq,
+                    "text": r.text,
+                    "editor_id": r.editor_id,
+                    "editor_display": r.editor_display,
+                    "timestamp": r.timestamp.isoformat() if r.timestamp else None,
+                    "content_sha256": r.content_sha256,
+                    "byte_count": r.byte_count,
+                    "note": r.note,
+                    "is_signed_revision": (
+                        bool(self.signature)
+                        and self.signature.content_sha256 == r.content_sha256
+                    ),
+                }
+                for r in (self.revisions or [])
+            ],
             "exported_artifact_uri": self.exported_artifact_uri,
             "export_target": self.export_target,
             "exported_at": self.exported_at.isoformat() if self.exported_at else None,

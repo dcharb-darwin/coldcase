@@ -5,12 +5,17 @@ import {
   exportReport,
   getReport,
   promoteMessageToReport,
+  reportPdfUrl,
   signReport,
   type Message,
   type Report,
 } from "@/lib/api/coldcase";
 import { caseKeys, reportKeys } from "../queryKeys";
-import CitationText from "./CitationText";
+import CitationText, { extractCitations } from "./CitationText";
+
+function extractCitationCount(text: string): number {
+  return extractCitations(text).length;
+}
 
 type DrawerState =
   | { kind: "closed" }
@@ -234,32 +239,42 @@ function ReportEditor({
         />
       </label>
 
-      {/* Final text */}
-      <label className="block mb-3">
-        <span className="text-sm text-slate-600">
-          Report body {isDraft ? "(editable — sign locks this)" : "(locked)"}
-        </span>
+      {/* Final text — editor + live preview */}
+      <div className="mb-3">
+        <div className="flex items-baseline justify-between">
+          <span className="text-sm text-slate-600">
+            Report body {isDraft ? "(editable — sign locks this)" : "(locked)"}
+          </span>
+          {isDraft ? (
+            <span className="text-[11px] text-slate-500">
+              {finalText.length} chars · {extractCitationCount(finalText)} citations
+            </span>
+          ) : null}
+        </div>
         {isDraft ? (
           <textarea
             className="mt-1 w-full border border-slate-300 rounded px-2 py-1.5 text-sm font-mono"
-            rows={14}
+            rows={12}
             value={finalText}
             onChange={(e) => setFinalText(e.target.value)}
           />
-        ) : (
-          <div className="mt-1 w-full border border-slate-300 rounded px-3 py-2 text-sm bg-slate-50 max-h-96 overflow-y-auto">
+        ) : null}
+
+        {/* Live preview: clickable citations against the current draft text. */}
+        <div className="mt-2">
+          <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-1">
+            {isDraft
+              ? "Live preview — click any citation to verify the source before signing"
+              : "Signed text"}
+          </div>
+          <div className="border border-slate-300 rounded px-3 py-2 text-sm bg-slate-50 max-h-72 overflow-y-auto">
             <CitationText text={finalText} onCitationClick={onCitationClick} />
           </div>
-        )}
-        {isDraft ? (
-          <div className="text-[11px] text-slate-500 mt-1">
-            Tip: <code>[src: filename, L17]</code> tokens render as clickable citations once you save / sign. Edit them only if the cited line is wrong.
-          </div>
-        ) : null}
-      </label>
+        </div>
+      </div>
 
       {/* First AI draft (always shown, read-only) */}
-      <details className="mb-4 rounded border border-slate-200 bg-slate-50 p-3 text-xs">
+      <details className="mb-3 rounded border border-slate-200 bg-slate-50 p-3 text-xs">
         <summary className="cursor-pointer font-semibold text-slate-700">
           §13663(b) first AI draft — not an officer statement
         </summary>
@@ -269,6 +284,49 @@ function ReportEditor({
             onCitationClick={onCitationClick}
           />
         </div>
+      </details>
+
+      {/* Revision history (business rule #13) */}
+      <details className="mb-4 rounded border border-slate-200 bg-slate-50 p-3 text-xs">
+        <summary className="cursor-pointer font-semibold text-slate-700">
+          Revision history ({report.revisions.length})
+        </summary>
+        <ol className="mt-2 space-y-2">
+          {report.revisions.map((r) => (
+            <li
+              key={r.seq}
+              className={`border rounded p-2 ${
+                r.is_signed_revision
+                  ? "border-emerald-300 bg-emerald-50"
+                  : "border-slate-200 bg-white"
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="font-semibold">
+                  Rev {r.seq} · {r.editor_display || r.editor_id}
+                  {r.is_signed_revision ? (
+                    <span className="ml-2 px-1.5 py-0.5 rounded bg-emerald-200 text-emerald-900 text-[10px]">
+                      ✓ SIGNED
+                    </span>
+                  ) : null}
+                </span>
+                <span className="text-slate-500 text-[10px]">
+                  {r.timestamp ? new Date(r.timestamp).toLocaleString() : ""} · {r.byte_count} B
+                </span>
+              </div>
+              <div className="text-[10px] text-slate-500 font-mono mt-0.5">
+                sha256: {r.content_sha256.slice(0, 24)}…
+              </div>
+              {r.note ? <div className="text-[11px] text-slate-600 italic mt-0.5">{r.note}</div> : null}
+              <details className="mt-1">
+                <summary className="cursor-pointer text-[11px] text-blue-700">show text</summary>
+                <div className="mt-1 max-h-48 overflow-y-auto bg-slate-50 border border-slate-200 rounded px-2 py-1">
+                  <CitationText text={r.text} onCitationClick={onCitationClick} />
+                </div>
+              </details>
+            </li>
+          ))}
+        </ol>
       </details>
 
       {/* Signature block */}
@@ -350,9 +408,14 @@ function ReportEditor({
           </button>
         ) : null}
         {report.status === "exported" ? (
-          <div className="text-xs text-slate-600 self-center">
-            ✓ Exported to <code>{report.exported_artifact_uri}</code>
-          </div>
+          <a
+            href={reportPdfUrl(report.id)}
+            target="_blank"
+            rel="noreferrer"
+            className="px-3 py-1.5 text-sm rounded bg-blue-600 text-white hover:bg-blue-700"
+          >
+            View signed PDF ↗
+          </a>
         ) : null}
         <button type="button" onClick={onClose} className="px-3 py-1.5 text-sm rounded border border-slate-300">
           Close

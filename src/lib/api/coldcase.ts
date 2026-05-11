@@ -109,6 +109,18 @@ export interface OfficerSignature {
 
 export type ReportStatus = "draft" | "signed" | "exported" | "superseded";
 
+export interface ReportRevision {
+  seq: number;
+  text: string;
+  editor_id: string;
+  editor_display: string;
+  timestamp: string | null;
+  content_sha256: string;
+  byte_count: number;
+  note: string;
+  is_signed_revision: boolean;
+}
+
 export interface Report {
   id: string;
   case_id: string;
@@ -121,6 +133,7 @@ export interface Report {
   statutory_disclosure: string;
   status: ReportStatus;
   signature: OfficerSignature | null;
+  revisions: ReportRevision[];
   exported_artifact_uri: string;
   export_target: string;
   exported_at: string | null;
@@ -290,6 +303,11 @@ export async function signReport(id: string, body: {
 export async function exportReport(id: string, target: "file" | "evidence.com" = "file"): Promise<Report> {
   const { data } = await http.post<Report>(`/reports/${id}/export`, { target });
   return data;
+}
+
+export function reportPdfUrl(id: string): string {
+  // Vite proxies /launchpad/* to the backend, so this is browser-loadable directly.
+  return `/launchpad/coldcase/api/reports/${id}/pdf`;
 }
 
 // ── Audit ──────────────────────────────────────────────────────────────────

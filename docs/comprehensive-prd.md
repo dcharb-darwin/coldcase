@@ -111,6 +111,17 @@ Explicitly **out of scope** to keep MVP focused (per Dan's stated scope discipli
 - **Acceptance:** detective asks "summarize the patrol report" and gets a response; the prompt + response + which documents were in context are persisted; retries against the same question create new Messages with the same `parent_message_id`.
 - **Out of scope:** streaming UI (nice-to-have); model selection (use the agency's default GCC Copilot endpoint).
 
+### F3a — Revision history of the draft
+
+- **What:** every edit to the report draft (`PATCH /reports/{id}`) appends a `ReportRevision` to an append-only list on the Report. Each revision captures `{seq, text, editor_id, editor_display, timestamp, content_sha256, byte_count}`. The first revision is the AI's first draft (verbatim); subsequent revisions are officer edits. The revision whose hash equals `signature.content_sha256` is the one that was signed.
+- **Why:** §13663(c) audit-trail strength benefits from a complete edit history. Combined with the §13663(b) first-AI-draft snapshot, this gives the city attorney an unambiguous timeline: "AI wrote X, officer changed it to Y over N revisions, officer signed revision K."
+- **UI:** report drawer surfaces a collapsible "Revision history (N)" panel listing every revision with timestamp + editor + hash prefix. The signed revision is flagged. Clicking a revision shows a side-by-side diff against the first AI draft.
+
+### F3b — Live source verification in the editor
+
+- **What:** the report editor renders a **live citation preview** beneath the editable textarea. Every `[src: <filename>, L<n>]` token in the draft becomes a clickable chip that opens the cited document and highlights the cited line — same behavior as in chat. This lets the officer verify each citation *before* signing rather than only after.
+- **Why:** §13663(a)(2) attestation requires the officer to certify that the facts in the report "are true and correct." Click-through verification while editing makes the certification mechanical: the officer reads the claim, clicks the chip, sees the source line, and only then keeps it in the draft.
+
 ### F3 — Approve, sign & publish (the "official report" path)
 - **What:** detective selects one assistant Message as the basis for an **official report**, optionally edits it, applies their **electronic signature**, and exports. Cold Case freezes the **first AI draft** (the unedited AI output that started the chain) separately and immutably, per §13663(b).
 - **Data:** `Approval { id, first_draft_message_id, final_text, ai_programs_used[] (name+version), approved_by, approved_at, signature (e-sig payload), exported_artifact_uri, export_target }`. The `first_draft_message_id` MUST reference the **initial AI-only output** in the conversation, not the edited final.
@@ -192,6 +203,8 @@ All entities partition by `app_id="coldcase"` (Launchpad Admin Pattern) and by `
 10. **First-draft retention floor.** The first AI draft of any signed Report is retained for as long as the Report is retained (§13663(b)). Cold Case refuses to purge first-draft Messages while the parent Report's retention is still active.
 11. **AI programs identified per Report.** The exact model name + version used to produce each Report is captured at sign time. If a Conversation used multiple models, all are listed.
 12. **Citations are mandatory in AI output.** Every factual claim in an assistant message must carry a `[src: <filename>, L<n>]` citation. The officer is expected to click each citation before signing. Unsourced claims should be challenged or removed.
+13. **Revisions are append-only.** Every `PATCH /reports/{id}` appends a `ReportRevision` with timestamp, editor identity, and content hash. Revisions are never deleted or edited in place. The signed revision is the one whose hash matches `signature.content_sha256`.
+14. **Signed PDF is the canonical artifact.** Once a report is signed and exported, the resulting PDF is the legal artifact. It is retrievable via `GET /reports/{id}/pdf` as long as the Report retention policy holds. Re-exports overwrite a `superseded` flag on prior PDFs; the original is never deleted while the report is retained (§13663(b) extends to the exported PDF in addition to the first AI draft).
 
 ## 8. Provider architecture
 
