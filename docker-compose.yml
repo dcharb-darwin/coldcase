@@ -47,7 +47,7 @@ services:
       # LLM provider + key (durable rule: model name from env, never hard-coded)
       PROVIDER_LLM: "${PROVIDER_LLM:-mock}"
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
-      OPENAI_MODEL: "${OPENAI_MODEL:-gpt-4o-mini}"
+      OPENAI_MODEL: "${OPENAI_MODEL:-gpt-5.5}"
       OLLAMA_BASE_URL: "${OLLAMA_BASE_URL:-http://host.docker.internal:11434}"
       COLDCASE_LLM_MODEL: "${COLDCASE_LLM_MODEL:-qwen3.6:35b-a3b-nvfp4}"
     volumes:

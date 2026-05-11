@@ -106,7 +106,9 @@ class OpenAILLMProvider:
     name = "openai"
 
     def __init__(self, model: str | None = None, api_key: str | None = None):
-        self.model = model or os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+        # Alias (no date suffix) tracks the latest snapshot; the snapshot id
+        # OpenAI returns is what lands on the §13663(a)(1) disclosure footer.
+        self.model = model or os.environ.get("OPENAI_MODEL", "gpt-5.5")
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
         self.base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
 
@@ -119,13 +121,15 @@ class OpenAILLMProvider:
                 model=self.model + " (no-key-echo)",
             )
         import httpx
+        # Omit `temperature` entirely — newer models (gpt-5.x family) reject
+        # any non-default value and we don't want creative variation for
+        # cold-case work in the first place. The model's own default is fine.
         payload = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
-            "temperature": 0.2,
         }
         headers = {
             "Authorization": f"Bearer {self.api_key}",
