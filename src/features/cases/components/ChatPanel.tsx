@@ -84,6 +84,23 @@ export default function ChatPanel({ caseId, documents, media, onPromote, onCitat
     [activeConvId, draft, sendMutation.isPending],
   );
 
+  // Live elapsed-time counter while a send is in flight. gpt-5.x with
+  // multimodal PDFs can take 60–120s for large cases; without this
+  // counter the user thinks the app froze.
+  const [elapsedSec, setElapsedSec] = useState(0);
+  useEffect(() => {
+    if (!sendMutation.isPending) {
+      setElapsedSec(0);
+      return;
+    }
+    const started = Date.now();
+    setElapsedSec(0);
+    const timer = window.setInterval(() => {
+      setElapsedSec(Math.round((Date.now() - started) / 1000));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [sendMutation.isPending]);
+
   // Prompt suggestions: render against the active doc selection if any.
   const firstSelectedDocId = useMemo(() => [...selectedDocIds][0], [selectedDocIds]);
   const { data: suggestionsData } = useQuery({
@@ -262,6 +279,17 @@ export default function ChatPanel({ caseId, documents, media, onPromote, onCitat
 
       {/* Composer */}
       <div className="border-t border-slate-200 p-3">
+        {/* Multimodal PDFs against gpt-5.x can take a minute or more.
+            Surface a progress banner once the wait crosses the perceived-
+            broken threshold so the user knows it's working. */}
+        {sendMutation.isPending && elapsedSec >= 8 ? (
+          <div className="mb-2 px-2 py-1.5 rounded border border-blue-200 bg-blue-50 text-blue-900 text-[11px] flex items-center gap-2">
+            <span className="inline-block w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+            <span>
+              Reading {selectedDocIds.size === 0 ? `all ${documents.length}` : selectedDocIds.size} document(s) and reasoning across them — gpt-5.x typically takes <strong>30–120 s</strong> for multimodal PDF calls. Elapsed: <strong>{elapsedSec}s</strong>.
+            </span>
+          </div>
+        ) : null}
         <textarea
           className="w-full border border-slate-300 rounded px-2 py-1.5 text-sm resize-none"
           rows={3}
@@ -288,7 +316,7 @@ export default function ChatPanel({ caseId, documents, media, onPromote, onCitat
             onClick={() => sendMutation.mutate()}
             className="px-3 py-1.5 text-sm rounded bg-blue-600 text-white disabled:opacity-50"
           >
-            {sendMutation.isPending ? "Sending…" : "Send"}
+            {sendMutation.isPending ? `Sending… ${elapsedSec}s` : "Send"}
           </button>
         </div>
       </div>

@@ -272,8 +272,11 @@ export async function sendMessage(conversationId: string, body: {
   in_context_document_ids?: string[];
   in_context_media_ids?: string[];
 }): Promise<{ user_message: Message; assistant_message: Message }> {
+  // 5 min — multimodal PDF chat against large cases can run 60–120s on gpt-5.5.
+  // The user-visible Send button surfaces an elapsed-time counter so the
+  // wait feels intentional rather than hung.
   const { data } = await http.post(`/conversations/${conversationId}/messages`, body, {
-    timeout: 180000,  // LLM calls can take a while
+    timeout: 300_000,
   });
   return data;
 }
