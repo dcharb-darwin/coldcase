@@ -17,6 +17,7 @@ WORKDIR /app
 # with darker production images that may render charts).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    tesseract-ocr \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt /app/requirements.txt
