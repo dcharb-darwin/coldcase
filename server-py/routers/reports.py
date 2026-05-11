@@ -318,9 +318,11 @@ def download_report_pdf(report_id: str, user: CurrentUser = Depends(current_user
 
 @router.get("/{report_id}/chain.pdf")
 def download_chain_pdf(report_id: str, user: CurrentUser = Depends(current_user)):
-    """F7 — Chain-of-Custody PDF (§13663(c) audit trail). Auto-generated on
-    every /export and re-derivable on demand. The companion artifact to
-    /pdf — they travel as a pair."""
+    """F7 — Chain-of-Custody PDF (§13663(c) audit trail).
+
+    Cached forever once written: a signed report is immutable, so the chain
+    derived from it cannot change. We regenerate only if the cached file is
+    missing on disk (e.g., volume re-created)."""
     from providers.document_storage import get_document_storage_provider
     report = Report.objects(id=report_id, tenant_id=user.tenant_id).first()
     if not report:
@@ -332,8 +334,6 @@ def download_chain_pdf(report_id: str, user: CurrentUser = Depends(current_user)
         if os.path.exists(path):
             return FileResponse(path, media_type="application/pdf",
                                 filename=f"{report.title or report.id}.chain.pdf")
-    # Regenerate on demand if missing (e.g. signed but never exported, or
-    # the chain artifact was deleted).
     path = export_chain_pdf(report)
     report.chain_artifact_uri = f"file://{path}"
     report.save()

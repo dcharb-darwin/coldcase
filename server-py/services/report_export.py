@@ -28,6 +28,7 @@ from reportlab.platypus import (
 )
 from reportlab.lib import colors
 
+from lib.reportlab_helpers import escape_html
 from models.report import Report
 
 
@@ -151,7 +152,7 @@ def export_report_pdf(report: Report, *, output_dir: str | None = None) -> str:
     story = []
 
     # ── Cover disclosure (also on every page footer) ───────────────────────
-    story.append(Paragraph(report.title or "Official Report", title_style))
+    story.append(Paragraph(escape_html(report.title or "Official Report"), title_style))
 
     story.append(Paragraph("AI Disclosure (California Penal Code § 13663)", h2))
     story.append(Paragraph(
@@ -190,17 +191,21 @@ def export_report_pdf(report: Report, *, output_dir: str | None = None) -> str:
     story.append(Spacer(1, 12))
 
     # ── Body ───────────────────────────────────────────────────────────────
+    # LLM output gets HTML-escaped before going into ReportLab's mini-HTML
+    # Paragraph parser — otherwise `&`, `<`, citation tokens like
+    # `[src: file, p3, "<something>"]`, and other punctuation can produce
+    # un-parseable XML and render as garbage.
     story.append(Paragraph("Report", h2))
     for paragraph in (report.final_text or "").split("\n\n"):
         if paragraph.strip():
-            story.append(Paragraph(paragraph.replace("\n", "<br/>"), body))
+            story.append(Paragraph(escape_html(paragraph), body))
             story.append(Spacer(1, 6))
 
     # ── Officer attestation + signature ────────────────────────────────────
     story.append(Spacer(1, 18))
     story.append(Paragraph("Officer Attestation (Penal Code § 13663(a)(2))", h2))
     sig = report.signature
-    story.append(Paragraph(sig.attestation_text, body))
+    story.append(Paragraph(escape_html(sig.attestation_text), body))
     story.append(Spacer(1, 12))
     sig_table = Table(
         [
@@ -241,7 +246,7 @@ def export_report_pdf(report: Report, *, output_dir: str | None = None) -> str:
     story.append(Spacer(1, 8))
     for paragraph in (report.first_ai_draft_text_snapshot or "").split("\n\n"):
         if paragraph.strip():
-            story.append(Paragraph(paragraph.replace("\n", "<br/>"), body))
+            story.append(Paragraph(escape_html(paragraph), body))
             story.append(Spacer(1, 6))
 
     def _footer_cb(canvas, doc_):

@@ -195,14 +195,15 @@ DOCUMENT_SPECS: dict[str, tuple[str, str]] = {
 
 def _make_pdf(path: str, title: str, body_text: str) -> None:
     """Render a simple PDF — enough to be parseable by Copilot/OpenAI."""
+    from lib.reportlab_helpers import escape_html
     os.makedirs(os.path.dirname(path), exist_ok=True)
     styles = getSampleStyleSheet()
     doc = SimpleDocTemplate(path, pagesize=LETTER,
                             leftMargin=0.75*inch, rightMargin=0.75*inch,
                             topMargin=0.75*inch, bottomMargin=0.75*inch)
-    story = [Paragraph(title, styles["Title"]), Spacer(1, 12)]
+    story = [Paragraph(escape_html(title), styles["Title"]), Spacer(1, 12)]
     for paragraph in body_text.split("\n\n"):
-        story.append(Paragraph(paragraph.replace("\n", "<br/>"), styles["BodyText"]))
+        story.append(Paragraph(escape_html(paragraph), styles["BodyText"]))
         story.append(Spacer(1, 8))
     doc.build(story)
 
