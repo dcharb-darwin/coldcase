@@ -1,0 +1,20 @@
+# Cold Case — frontend dev image.
+# Vite dev server with HMR. Source is bind-mounted; node_modules lives inside
+# the container in an anonymous volume so the host's node_modules (or lack
+# thereof) doesn't interfere.
+
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Install deps first (cached layer until package.json changes).
+COPY package.json package-lock.json* ./
+RUN npm install
+
+# Source is bind-mounted at runtime; this COPY exists only for standalone builds.
+COPY . /app
+
+EXPOSE 5178
+
+# `--host 0.0.0.0` so we can reach it from the docker host. Port comes from env.
+CMD ["sh", "-c", "npx vite --host 0.0.0.0 --port ${FRONTEND_PORT:-5178}"]

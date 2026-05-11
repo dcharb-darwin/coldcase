@@ -1,0 +1,24 @@
+{
+  "name": "coldcase",
+  "version": "0.1.0",
+  "displayName": "Cold Case",
+  "slug": "coldcase",
+  "profile": "launchpad-standard",
+  "layout": "single-client",
+  "description": "Cold case investigation, lead management, and evidence tracking for law enforcement",
+  "ports": {
+    "frontend": 5178,
+    "backend": 7787,
+    "mongo": 27022
+  },
+  "providers": [
+    "employee",
+    "email",
+    "calendar",
+    "training",
+    "evaluation",
+    "photos"
+  ],
+  "scaffoldedFrom": "launchpad-starter-kit@0.2.1",
+  "scaffoldedAt": "2026-05-11"
+}

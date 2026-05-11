@@ -1,0 +1,6 @@
+# Editable installs for local darwin-* clones (optional).
+# Only relevant when developing against a local checkout of the shared libs
+# rather than the published versions.
+
+# -e ../darwin-resty
+# -e ../darwin-common

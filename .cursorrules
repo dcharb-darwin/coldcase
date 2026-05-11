@@ -1,0 +1,13 @@
+Follow AGENTS.md at the repo root. It's the IDE-agnostic entry point for this Launchpad app.
+
+Read in order before generating any code:
+1. docs/PRINCIPLES.md — design intent (P1–P6 + agentic)
+2. docs/PATTERNS.md — architectural patterns
+3. docs/CONVENTIONS.md — coding conventions
+
+For AI assistant code (proposer/reviewer, permission assistant), also read docs/AGENTIC.md.
+
+Commit trailers required: [trace: coldcase-<concern>].
+Git identity: dcharb-darwin <daniel.charboneau@darwingov.com>.
+
+Never: --no-verify, --amend pushed commits, force-push main, hard-coded ports, raw hex/rgb in components, `any` in TypeScript.

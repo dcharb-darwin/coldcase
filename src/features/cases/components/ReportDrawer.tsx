@@ -1,0 +1,377 @@
+import { useEffect, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  editReport,
+  exportReport,
+  getReport,
+  promoteMessageToReport,
+  signReport,
+  type Message,
+  type Report,
+} from "@/lib/api/coldcase";
+import { caseKeys, reportKeys } from "../queryKeys";
+import CitationText from "./CitationText";
+
+type DrawerState =
+  | { kind: "closed" }
+  | { kind: "promote"; sourceMessage: Message }
+  | { kind: "report"; reportId: string };
+
+interface ReportDrawerProps {
+  caseId: string;
+  state: DrawerState;
+  onClose: () => void;
+  onCitationClick: (filename: string, line: number) => void;
+}
+
+export default function ReportDrawer({ caseId, state, onClose, onCitationClick }: ReportDrawerProps) {
+  if (state.kind === "closed") return null;
+  return (
+    <div className="fixed inset-0 z-40 flex justify-end bg-black/30" onClick={onClose}>
+      <div
+        className="bg-white w-full max-w-3xl h-full overflow-y-auto shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {state.kind === "promote" ? (
+          <PromoteForm
+            caseId={caseId}
+            sourceMessage={state.sourceMessage}
+            onClose={onClose}
+            onCitationClick={onCitationClick}
+          />
+        ) : (
+          <ReportEditor
+            caseId={caseId}
+            reportId={state.reportId}
+            onClose={onClose}
+            onCitationClick={onCitationClick}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PromoteForm({
+  caseId,
+  sourceMessage,
+  onClose,
+  onCitationClick,
+}: {
+  caseId: string;
+  sourceMessage: Message;
+  onClose: () => void;
+  onCitationClick: (filename: string, line: number) => void;
+}) {
+  const qc = useQueryClient();
+  const [title, setTitle] = useState(() => `Report from ${new Date().toLocaleDateString()}`);
+
+  const promoteMutation = useMutation({
+    mutationFn: () => promoteMessageToReport({ title, message_id: sourceMessage.id }),
+    onSuccess: (report: Report) => {
+      qc.invalidateQueries({ queryKey: caseKeys.reports(caseId) });
+      qc.invalidateQueries({ queryKey: caseKeys.conversations(caseId) });
+      window.dispatchEvent(new CustomEvent("open-report", { detail: { reportId: report.id } }));
+      onClose();
+    },
+  });
+
+  return (
+    <div className="p-6">
+      <header className="flex items-start justify-between mb-4">
+        <div>
+          <h2 className="text-lg font-semibold">Promote AI output to an official report</h2>
+          <p className="text-xs text-slate-500 mt-1">
+            This message will become the <strong>§13663(b) first AI draft</strong> and be retained
+            for as long as the report is retained. It cannot be edited or removed afterward.
+          </p>
+        </div>
+        <button type="button" onClick={onClose} className="text-slate-400 text-2xl leading-none px-2">
+          ×
+        </button>
+      </header>
+
+      <label className="block mb-3">
+        <span className="text-sm text-slate-600">Report title</span>
+        <input
+          className="mt-1 w-full border border-slate-300 rounded px-2 py-1.5 text-sm"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+        />
+      </label>
+
+      <div className="mt-2 rounded border border-amber-200 bg-amber-50 p-3 text-xs">
+        <div className="font-semibold text-amber-900 mb-1">§13663(b) first AI draft (preview)</div>
+        <div className="text-amber-900/90 max-h-72 overflow-y-auto">
+          <CitationText text={sourceMessage.content} onCitationClick={onCitationClick} />
+        </div>
+        <div className="mt-2 text-amber-800/80">
+          Model: <code>{sourceMessage.model || "—"}</code> ({sourceMessage.provider || "—"})
+        </div>
+      </div>
+
+      {promoteMutation.error ? (
+        <div className="mt-3 text-sm text-red-700">{(promoteMutation.error as Error).message}</div>
+      ) : null}
+
+      <div className="mt-5 flex justify-end gap-2">
+        <button type="button" onClick={onClose} className="px-3 py-1.5 text-sm rounded border border-slate-300">
+          Cancel
+        </button>
+        <button
+          type="button"
+          disabled={promoteMutation.isPending || !title.trim()}
+          onClick={() => promoteMutation.mutate()}
+          className="px-3 py-1.5 text-sm rounded bg-blue-600 text-white disabled:opacity-50"
+        >
+          {promoteMutation.isPending ? "Promoting…" : "Promote to report draft"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ReportEditor({
+  caseId,
+  reportId,
+  onClose,
+  onCitationClick,
+}: {
+  caseId: string;
+  reportId: string;
+  onClose: () => void;
+  onCitationClick: (filename: string, line: number) => void;
+}) {
+  const qc = useQueryClient();
+  const { data: report, refetch } = useQuery({
+    queryKey: reportKeys.detail(reportId),
+    queryFn: () => getReport(reportId),
+  });
+  const [finalText, setFinalText] = useState("");
+  const [title, setTitle] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [badge, setBadge] = useState("");
+
+  useEffect(() => {
+    if (report) {
+      setFinalText(report.final_text);
+      setTitle(report.title);
+      setDisplayName(report.signature?.display_name ?? "");
+      setBadge(report.signature?.badge_number ?? "");
+    }
+  }, [report?.id]);
+
+  const editMut = useMutation({
+    mutationFn: () => editReport(reportId, { title, final_text: finalText }),
+    onSuccess: () => {
+      refetch();
+      qc.invalidateQueries({ queryKey: caseKeys.reports(caseId) });
+    },
+  });
+
+  const signMut = useMutation({
+    mutationFn: async () => {
+      // Save edits first, then sign.
+      await editReport(reportId, { title, final_text: finalText });
+      return signReport(reportId, { display_name: displayName, badge_number: badge });
+    },
+    onSuccess: () => {
+      refetch();
+      qc.invalidateQueries({ queryKey: caseKeys.reports(caseId) });
+    },
+  });
+
+  const exportMut = useMutation({
+    mutationFn: () => exportReport(reportId, "file"),
+    onSuccess: () => {
+      refetch();
+      qc.invalidateQueries({ queryKey: caseKeys.reports(caseId) });
+    },
+  });
+
+  if (!report) {
+    return <div className="p-6 text-slate-500">Loading report…</div>;
+  }
+
+  const isDraft = report.status === "draft";
+  const isSigned = report.status === "signed" || report.status === "exported";
+
+  return (
+    <div className="p-6">
+      <header className="flex items-start justify-between mb-4">
+        <div>
+          <h2 className="text-lg font-semibold">
+            {report.status === "draft" ? "Draft report" : "Official report"}
+          </h2>
+          <div className="text-xs text-slate-500 mt-1 flex items-center gap-2">
+            <StatusBadge status={report.status} /> · ID <code className="text-[10px]">{report.id.slice(-8)}</code>
+          </div>
+        </div>
+        <button type="button" onClick={onClose} className="text-slate-400 text-2xl leading-none px-2">
+          ×
+        </button>
+      </header>
+
+      {/* §13663(a)(1) banner */}
+      <div className="rounded border border-amber-200 bg-amber-50 p-3 text-xs mb-4">
+        <div className="font-semibold text-amber-900">AI Disclosure (Cal. Penal Code §13663(a)(1))</div>
+        <div className="mt-1 text-amber-900/90">{report.statutory_disclosure}</div>
+        {report.ai_programs_used.length > 0 ? (
+          <div className="mt-1 text-amber-900/80">
+            AI program(s): {report.ai_programs_used.map((p) => `${p.name} ${p.version || ""}`.trim()).join("; ")}
+          </div>
+        ) : null}
+      </div>
+
+      {/* Title */}
+      <label className="block mb-3">
+        <span className="text-sm text-slate-600">Title</span>
+        <input
+          className="mt-1 w-full border border-slate-300 rounded px-2 py-1.5 text-sm disabled:bg-slate-100"
+          value={title}
+          disabled={!isDraft}
+          onChange={(e) => setTitle(e.target.value)}
+        />
+      </label>
+
+      {/* Final text */}
+      <label className="block mb-3">
+        <span className="text-sm text-slate-600">
+          Report body {isDraft ? "(editable — sign locks this)" : "(locked)"}
+        </span>
+        {isDraft ? (
+          <textarea
+            className="mt-1 w-full border border-slate-300 rounded px-2 py-1.5 text-sm font-mono"
+            rows={14}
+            value={finalText}
+            onChange={(e) => setFinalText(e.target.value)}
+          />
+        ) : (
+          <div className="mt-1 w-full border border-slate-300 rounded px-3 py-2 text-sm bg-slate-50 max-h-96 overflow-y-auto">
+            <CitationText text={finalText} onCitationClick={onCitationClick} />
+          </div>
+        )}
+        {isDraft ? (
+          <div className="text-[11px] text-slate-500 mt-1">
+            Tip: <code>[src: filename, L17]</code> tokens render as clickable citations once you save / sign. Edit them only if the cited line is wrong.
+          </div>
+        ) : null}
+      </label>
+
+      {/* First AI draft (always shown, read-only) */}
+      <details className="mb-4 rounded border border-slate-200 bg-slate-50 p-3 text-xs">
+        <summary className="cursor-pointer font-semibold text-slate-700">
+          §13663(b) first AI draft — not an officer statement
+        </summary>
+        <div className="mt-2 text-slate-700 max-h-72 overflow-y-auto">
+          <CitationText
+            text={report.first_ai_draft_text_snapshot}
+            onCitationClick={onCitationClick}
+          />
+        </div>
+      </details>
+
+      {/* Signature block */}
+      <div className="rounded border border-slate-200 p-3 mb-4 text-sm">
+        <div className="font-semibold mb-2">§13663(a)(2) — Officer attestation</div>
+        {isSigned && report.signature ? (
+          <div className="space-y-1 text-xs">
+            <div><strong>Signed by:</strong> {report.signature.display_name}</div>
+            <div><strong>Badge:</strong> {report.signature.badge_number || "—"}</div>
+            <div><strong>At:</strong> {report.signature.signed_at}</div>
+            <div className="font-mono text-[10px] break-all">
+              <strong>Content hash:</strong> {report.signature.content_sha256}
+            </div>
+            <div className="italic text-slate-600 mt-2">"{report.signature.attestation_text}"</div>
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-2">
+            <label className="block">
+              <span className="text-xs text-slate-600">Display name</span>
+              <input
+                className="mt-1 w-full border border-slate-300 rounded px-2 py-1 text-sm"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                placeholder="Det. J. Smith"
+              />
+            </label>
+            <label className="block">
+              <span className="text-xs text-slate-600">Badge #</span>
+              <input
+                className="mt-1 w-full border border-slate-300 rounded px-2 py-1 text-sm"
+                value={badge}
+                onChange={(e) => setBadge(e.target.value)}
+              />
+            </label>
+          </div>
+        )}
+      </div>
+
+      {/* Errors */}
+      {[editMut, signMut, exportMut].map((m, i) =>
+        m.error ? (
+          <div key={i} className="text-sm text-red-700 mb-2">
+            {(m.error as Error).message}
+          </div>
+        ) : null
+      )}
+
+      {/* Actions */}
+      <div className="flex flex-wrap justify-end gap-2 mt-2">
+        {isDraft ? (
+          <>
+            <button
+              type="button"
+              onClick={() => editMut.mutate()}
+              disabled={editMut.isPending}
+              className="px-3 py-1.5 text-sm rounded border border-slate-300"
+            >
+              {editMut.isPending ? "Saving…" : "Save draft"}
+            </button>
+            <button
+              type="button"
+              onClick={() => signMut.mutate()}
+              disabled={signMut.isPending || !displayName.trim()}
+              className="px-3 py-1.5 text-sm rounded bg-emerald-600 text-white disabled:opacity-50"
+              title="§13663(a)(2): signing attests review + factual accuracy. Required before export."
+            >
+              {signMut.isPending ? "Signing…" : "Sign report"}
+            </button>
+          </>
+        ) : null}
+        {report.status === "signed" ? (
+          <button
+            type="button"
+            onClick={() => exportMut.mutate()}
+            disabled={exportMut.isPending}
+            className="px-3 py-1.5 text-sm rounded bg-blue-600 text-white disabled:opacity-50"
+          >
+            {exportMut.isPending ? "Exporting…" : "Export PDF"}
+          </button>
+        ) : null}
+        {report.status === "exported" ? (
+          <div className="text-xs text-slate-600 self-center">
+            ✓ Exported to <code>{report.exported_artifact_uri}</code>
+          </div>
+        ) : null}
+        <button type="button" onClick={onClose} className="px-3 py-1.5 text-sm rounded border border-slate-300">
+          Close
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function StatusBadge({ status }: { status: Report["status"] }) {
+  const map: Record<Report["status"], string> = {
+    draft: "bg-amber-100 text-amber-800",
+    signed: "bg-emerald-100 text-emerald-800",
+    exported: "bg-blue-100 text-blue-800",
+    superseded: "bg-slate-200 text-slate-600",
+  };
+  return (
+    <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${map[status]}`}>
+      {status}
+    </span>
+  );
+}

@@ -1,0 +1,51 @@
+#!/bin/sh
+# .githooks/pre-push — Launchpad architecture drift reminder (soft gate)
+#
+# Managed by the `architecture-diff-gate` skill.
+# See: ~/Documents/Claude/knowledge/launchpad/architecture-diagram-sop.md
+#
+# Behavior: prints a reminder when architecture-relevant files are in the
+# pushed commits. NEVER blocks the push — exit 0 always. If a team wants
+# a hard gate, flip the last `exit 0` to `exit 1` per-repo.
+
+REPO_ROOT=$(git rev-parse --show-toplevel)
+
+# Paths that indicate architecture drift. Match via regex against pushed files.
+RELEVANT_PATTERN='^(server-py/server\.py|server-py/routers/|server-py/models/|server-py/services/|server-py/auth/app_manifest\.py|server-py/launchpad_admin/|server\.py|src/shell/|src/features/[^/]+/pages/|src/features/index\.ts|src/main\.tsx|docker-compose\.yml|project\.manifest\.json)'
+
+YELLOW='\033[0;33m'
+DIM='\033[2m'
+RESET='\033[0m'
+
+drift=0
+drift_files=""
+
+# Read the ref list from stdin (git push protocol: <local-ref> <local-sha> <remote-ref> <remote-sha>)
+while read -r local_ref local_sha remote_ref remote_sha; do
+  if [ "$local_sha" = "0000000000000000000000000000000000000000" ]; then
+    continue  # deleting a ref, no files
+  fi
+  if [ "$remote_sha" = "0000000000000000000000000000000000000000" ]; then
+    # new branch — compare against default branch
+    default=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||' || echo main)
+    range="origin/${default}..${local_sha}"
+  else
+    range="${remote_sha}..${local_sha}"
+  fi
+  changed=$(git diff --name-only "$range" 2>/dev/null || true)
+  matched=$(printf '%s\n' "$changed" | grep -E "$RELEVANT_PATTERN" || true)
+  if [ -n "$matched" ]; then
+    drift=1
+    drift_files="${drift_files}${matched}\n"
+  fi
+done
+
+if [ "$drift" = "1" ]; then
+  printf "\n${YELLOW}⚠  Architecture-relevant files changed in the pushed commits:${RESET}\n"
+  printf "${DIM}%b${RESET}" "$drift_files" | sort -u | sed 's/^/    /'
+  printf "\n${YELLOW}Consider regenerating docs/architecture.md + docs/architecture.html${RESET}\n"
+  printf "${DIM}Open the repo in Claude Code and invoke the${RESET} ${YELLOW}/architecture-diff-gate${RESET} ${DIM}skill.${RESET}\n"
+  printf "${DIM}SOP: ~/Documents/Claude/knowledge/launchpad/architecture-diagram-sop.md${RESET}\n\n"
+fi
+
+exit 0

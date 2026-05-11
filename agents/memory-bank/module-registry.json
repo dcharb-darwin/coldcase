@@ -1,0 +1,30 @@
+{
+  "app": "coldcase",
+  "version": "0.1.0",
+  "scaffolded_from": "launchpad-starter-kit@0.2.1",
+  "scaffolded_at": "2026-05-11",
+  "modules": {
+    "backend": {
+      "launchpad_admin": {
+        "source": "launchpad-admin-pattern",
+        "status": "verbatim",
+        "owner": "kit"
+      },
+      "services.ollama_client": { "source": "kit", "status": "verbatim", "owner": "kit" },
+      "services.admin_assistant": { "source": "kit", "status": "verbatim", "owner": "kit" },
+      "services.audit": { "source": "kit", "status": "verbatim", "owner": "kit" },
+      "services.seed_defaults": { "source": "kit", "status": "verbatim", "owner": "kit" },
+      "auth.app_manifest": { "source": "kit-template", "status": "hand-authored", "owner": "app" },
+      "routers.auth": { "source": "kit", "status": "scaffold", "owner": "app" },
+      "providers": { "source": "kit", "status": "scaffold", "owner": "app" }
+    },
+    "frontend": {
+      "launchpad-admin": { "source": "launchpad-admin-pattern", "status": "verbatim", "owner": "kit" },
+      "shell": { "source": "kit", "status": "scaffold", "owner": "app" },
+      "components": { "source": "kit", "status": "scaffold", "owner": "app" },
+      "lib/api": { "source": "kit", "status": "scaffold", "owner": "app" },
+      "features/admin": { "source": "kit", "status": "scaffold", "owner": "app" }
+    }
+  },
+  "notes": "Modules marked 'verbatim' come from upstream sources and should not be hand-edited in this repo. Changes go upstream so every future app inherits. Modules marked 'scaffold' are starting points you'll expand."
+}

@@ -1,0 +1,282 @@
+[00:00] They do, their solution is used to help monitor
+[00:06] and protect us from certain AI tools,
+[00:10] particularly ones that are, say, outside of the country,
+[00:13] things like that.
+[00:15] And when I met with them at one of our regular meetings,
+[00:19] I'd mentioned the SB-524 challenge.
+[00:22] This was a few months back when we were kind of looking
+[00:25] at when you first approached me with it,
+[00:26] and we're going, oh, crud, what are we gonna do?
+[00:29] And they had mentioned that they might have some options
+[00:33] through their tool that might be able to help with this.
+[00:35] And so I think that's what Dan's after,
+[00:37] is just to kind of get a feel for what the process is,
+[00:42] how you're using Copilot now,
+[00:44] how you're tracking SB-524,
+[00:46] and then he's gonna be able to see
+[00:48] if maybe there's something they can do
+[00:49] to make that process for everyone.
+[00:55] So, does that sound right, Dan?
+[00:57] Yeah, basically, I see how you're doing it today,
+[00:59] but you might want to do that you can't do,
+[01:01] or maybe even some things you didn't know you could do.
+[01:04] I could understand the use case,
+[01:05] and then the way the launchpad work are,
+[01:08] first we talk about, we understand your workflow,
+[01:11] then we do a feasibility study,
+[01:13] which is a really long way to say,
+[01:15] I basically go, is this possible?
+[01:17] Then I build a mockup, and by a mockup,
+[01:19] I mean a functional mockup,
+[01:20] so I don't want to send it to my dev team
+[01:23] unless I know it can be done.
+[01:24] And then I'll show it to you, and you go,
+[01:25] God, that's exactly what I want,
+[01:27] or here's what you missed.
+[01:29] Once we're in agreement, then we get into our dev team,
+[01:31] and they industrialize it.
+[01:32] So, right now, like codifying the processes,
+[01:36] making sure all the guardrails are in place,
+[01:37] the tracking, everything you need,
+[01:38] and maybe even additional capabilities
+[01:40] versus what you're doing today.
+[01:43] Okay.
+[01:47] So basically, for SB-524,
+[01:49] what I've been using Copilot for now is,
+[01:51] I'll have it analyzed cases and whatnot,
+[01:53] sometimes I'll have it write me like a summary
+[01:56] of a police report that I've already written.
+[01:58] So anytime we use AI to write anything,
+[02:02] like that summary or like a bullet point,
+[02:04] I have to be able to have that tracked.
+[02:06] So right now, I'll create like a PDF of it
+[02:10] from what I'm asking Copilot,
+[02:11] and I'll save it in our evidence.
+[02:14] But it would be nice to have a,
+[02:15] definitely like a backup where the,
+[02:17] for some reason, if something happened to that,
+[02:19] the city can go back and audit
+[02:21] and see exactly what I did on Copilot.
+[02:23] Like we don't have to give them everything,
+[02:26] but that would be for the city
+[02:27] and their lawyers to be able to determine at that time.
+[02:30] It's just whatever I had AI write.
+[02:33] So what type of data are you giving?
+[02:36] Are you giving pictures, case notes, PDFs, emails?
+[02:39] Like, what are you putting up in?
+[02:43] So I'll usually, I get cases after patrol has taken them.
+[02:47] So I'll usually take a PDF of their police report
+[02:49] and I'll have it, you know, analyze stuff.
+[02:51] And then I'll have it review my reports.
+[02:53] It doesn't, I'm not giving any pictures.
+[02:56] It currently doesn't accept any audio or videos.
+[03:00] Really just, really just police reports.
+[03:03] And it'll help me summarize things.
+[03:05] It'll help me create timelines for like the DA.
+[03:09] And then it also will help me, you know,
+[03:11] during followup interviews of any questions I may have missed.
+[03:13] It's just kind of, I haven't made me reminder questions,
+[03:17] stuff like that, but really just PDFs reports.
+[03:20] And then I'll have it also look up, you know,
+[03:22] penal codes and CalCrim just to make sure reports
+[03:25] are not missing anything.
+[03:27] Okay, and when you do this,
+[03:28] is it during cross-document referencing or anything like that?
+[03:31] Or is it just that one document and that one thing
+[03:33] and that one question?
+[03:34] How's that working?
+[03:36] When I have it write something,
+[03:37] I will have it just from my documents,
+[03:40] just from my transcription or something of an audio.
+[03:45] But so as far as I know,
+[03:46] it's not cross-referencing anything other
+[03:48] than just my document that I have.
+[03:50] Okay, so the requirements are, you may have,
+[03:55] it sounds like mainly PDFs, which is good.
+[03:58] Then maybe if we let you put in all of your PDFs
+[04:01] of all your case documents, your scans, whatever it is,
+[04:04] that allow you to automatically build a timeline
+[04:09] sourced to where each document,
+[04:11] where it got that timeline analysis from
+[04:12] or that user or that victim or whatever it is.
+[04:15] Stretch goal, not saying this is what we can build,
+[04:18] but when I think of what's possible,
+[04:20] I should be able to take that information
+[04:22] and build a graph to show you
+[04:24] how Dan is related to everything in here.
+[04:26] That how the timelines are related
+[04:28] and maybe identify or surface things
+[04:30] that weren't obvious connections to start.
+[04:33] That's the more advanced side,
+[04:34] but would that be useful?
+[04:35] Cause I don't want to throw it in there
+[04:36] or even spec it out unless that's useful to you.
+[04:42] So are you talking about like additional information
+[04:44] for the case, just additional timeline stuff?
+[04:46] Is that what you're talking about?
+[04:47] Yeah, let's say you got a police report,
+[04:49] you got some other text files, maybe a video,
+[04:52] maybe it's something that needs to be transcribed
+[04:53] from audio and you can just put them all into a directory.
+[04:57] We point at it, we adjust it into a project
+[05:00] and now you can ask any questions,
+[05:02] you can say generate a timeline.
+[05:04] Tell me how many times Dan met with Bill,
+[05:07] like things like that.
+[05:08] One of the things Dan, I'll just throw this out here now.
+[05:10] We've been, we standardized on co-pilot
+[05:13] and specifically the co-pilot inside our tenant
+[05:17] because it's, we're part of the GCC tenant
+[05:20] and because we're dealing with sieges data,
+[05:22] it's kind of keeps it encapsulated.
+[05:24] So what we're looking for is probably more of that auditing
+[05:29] and making sure that we're able to easily,
+[05:34] provide the information that the tech does need.
+[05:38] What you're describing almost sounds like you would be
+[05:40] taking it and doing your own AI analysis on that.
+[05:45] Give me the ability to, you don't have to use it.
+[05:48] I guess if it's not in scope, that's great
+[05:50] because I'm terrible about scope creep.
+[05:52] I like to think about what could be done,
+[05:54] but it sounds like what I'm hearing is you need an interface
+[05:58] other than the chat GPT one that will track, log audit
+[06:01] and keep all that up and up legal for you
+[06:03] so that you can always come back to it and point it out.
+[06:06] Plus when it generates a document, it says,
+[06:08] this response was generated with AI co-pilot
+[06:11] by whoever the user is.
+[06:13] Yes.
+[06:15] Okay, that's actually much easier.
+[06:19] Man, I really wanted to do the other part too,
+[06:21] but that's the need.
+[06:22] So that's what I will build.
+[06:26] That's what I'm imagining is.
+[06:28] If you hear that, what we're describing,
+[06:31] I would tell you any other California agency
+[06:34] is gonna keep that up because it's a need statewide, so.
+[06:40] That's what I like to use case.
+[06:41] Let me show you something real quick.
+[06:43] Sure.
+[06:44] Sorry.
+[06:48] But think of something like this,
+[06:51] but it'll have a chat interface
+[06:53] to where you have all of the documents related to it
+[06:55] that I can click on any document
+[06:57] and then I'll have a chat interface
+[06:59] to do what you're doing with co-pilot.
+[07:00] It'll hit your co-pilot to go to your backend,
+[07:03] but now it'll track all your documents
+[07:05] and any document you create from any document,
+[07:07] who created it, what AI did,
+[07:09] and what human approved it.
+[07:10] Does that make sense?
+[07:13] So I gotta go back.
+[07:16] Where's some of some documents?
+[07:18] These would be the documents.
+[07:19] This is for redaction.
+[07:20] So just conceptually, the workflow I'm thinking of,
+[07:23] is this would be a chat interface here.
+[07:25] You'd be able to see the document,
+[07:26] you'd ask it to summarize it,
+[07:27] or timeline analysis it,
+[07:29] it'll create an output, which it will score.
+[07:31] As you can see, every document created from any document
+[07:33] written by AI, approved by them,
+[07:37] and put it in a format that you guys are gonna sort of
+[07:39] have your letterhead, all of that, right?
+[07:42] Does that make sense?
+[07:43] So you're saying you would put things
+[07:44] into this interface here
+[07:47] and it would store it and on the backend,
+[07:49] use our co-pilot or the NCC tenant co-pilot.
+[07:54] Everything would be stored in your four walls.
+[07:56] So these documents would be stored in your Azure
+[07:58] or your S3 buckets.
+[08:01] We would only do the analysis, not store it.
+[08:03] So if we do the analysis in your GCC tenant, right?
+[08:07] So we'd send the document to your co-pilot,
+[08:12] it'll do the analysis,
+[08:13] come back with whatever the document is,
+[08:15] and now you can keep track of every version
+[08:17] of every response,
+[08:18] which ones you're approved and then end up using.
+[08:20] Does that make sense?
+[08:22] But you get the whole chain
+[08:23] because a lot of times when I'm working in AI,
+[08:25] I might have to ask the question three different times
+[08:27] to get the result I want,
+[08:28] but that makes sense because it might make errors.
+[08:30] But now you get that whole track path
+[08:32] and the one that you used or approved,
+[08:34] which I believe is what SVE is asking for is,
+[08:36] we need to know the prompts and the interactions
+[08:39] that led to the output you're approved and published.
+[08:45] Detective Gotti, what are your thoughts?
+[08:50] No, I think he's right.
+[08:51] But what I'm curious is,
+[08:53] are we moving these documents over to this separate system
+[08:55] or is it automatically tracking
+[08:57] what I'm doing on co-pilot?
+[08:59] So that's the interesting question.
+[09:01] Right now, are you storing all these documents
+[09:02] and individual projects in co-pilot?
+[09:04] Because once again, that's not a problem.
+[09:06] We're just adding a front-end wrapper or proxy
+[09:08] to add all the legal enforcement that you need.
+[09:11] Does that make sense?
+[09:13] Yeah.
+[09:15] And then it sets the stage for,
+[09:17] if we wanted to do something more interesting
+[09:18] in the future, we can.
+[09:19] But that means you don't log into chat GPT,
+[09:22] you go to your launch pad and when you add files,
+[09:26] it's adding it to a project in your GCC GPT environment.
+[09:29] We're just surfacing in here in a different way
+[09:32] and tracking all the changes, outputs
+[09:34] and things that you accept or don't accept.
+[09:37] Does that make sense?
+[09:38] So that way you get that full lineage
+[09:40] of everything you do with AI
+[09:43] for that legal defensibility and SB rule.
+[09:45] And we just take care of it automatically
+[09:47] so you don't have to deal with any processes
+[09:49] on the backside.
+[09:50] You add a file here, it puts it in that GPT,
+[09:53] but then we track all versions,
+[09:54] we track all edits, all outputs.
+[09:58] Now, how long could this be saved?
+[09:59] Because there's certain cases I'm working on,
+[10:02] like homicides, we have to keep them essentially forever.
+[10:06] So because it's storing it in your GPT
+[10:08] and we're acting more like a governance compliance layer
+[10:10] as long as you want,
+[10:11] and we would just be storing the metadata
+[10:13] and we'd store that metadata in your four walls,
+[10:15] not in our world.
+[10:16] Makes sense?
+[10:18] Yeah.
+[10:19] So every time I open the case
+[10:20] it'll reach into your SB bucket,
+[10:22] get the current status of that case,
+[10:23] it'll correlate it to what's in GPT
+[10:26] and that's where the actual files are restored.
+[10:28] So whenever you decide to wipe things out of GPT, cool.
+[10:30] But we'll keep that metadata,
+[10:31] I think up to two years automatically.
+[10:34] Or if you needed seven years, we change it to seven.
+[10:37] So Detective Gaudi, on your end,
+[10:39] you create, are you creating the co-pilot notebooks?
+[10:43] And is that where you're doing your,
+[10:44] how you're tracking or do you just do chats?
+[10:47] I have been creating the notebooks,
+[10:50] but whenever I actually create the PDF
+[10:53] to save what I did,
+[10:54] I'll add that to evidence.com.
+[10:57] Do you mind if I can stop recording?
+[10:59] Is it possible for you to walk me through
+[11:00] just high level what you do?
+[11:03] Yeah.
+[11:03] Let me stop the recording just in case.
+[11:05] I wanna make sure that if there is something in there
+[11:06] that I shouldn't record, I don't.
+[11:08] Okay.

@@ -1,0 +1,212 @@
+"""F2 — Chat with case (AI proxy + lineage)."""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
+
+from models import (
+    Case, Conversation, Message, MessageRole, Document, MediaInput,
+)
+from models.audit_event import AuditEventType
+from providers.llm import get_llm_provider
+from routers._deps import CurrentUser, current_user
+from services import case_audit
+from services.document_text import extract_text, number_lines
+
+
+router = APIRouter(tags=["Conversations"])
+
+
+# ── Bodies ──────────────────────────────────────────────────────────────────
+
+
+class StartConversationBody(BaseModel):
+    title: str = ""
+
+
+class SendMessageBody(BaseModel):
+    content: str = Field(min_length=1)
+    parent_message_id: Optional[str] = None
+    # Caller declares which documents / media are "in context" for this prompt
+    # so the audit trail can answer §13663(c)(2).
+    in_context_document_ids: list[str] = Field(default_factory=list)
+    in_context_media_ids: list[str] = Field(default_factory=list)
+
+
+# ── Endpoints ───────────────────────────────────────────────────────────────
+
+
+@router.post("/cases/{case_id}/conversations", status_code=201)
+def start_conversation(case_id: str, body: StartConversationBody, user: CurrentUser = Depends(current_user)):
+    case = Case.objects(id=case_id, tenant_id=user.tenant_id).first()
+    if not case:
+        raise HTTPException(404, "Case not found")
+    conv = Conversation(
+        tenant_id=user.tenant_id, case=case, user_id=user.user_id,
+        title=body.title or f"Conversation {datetime.utcnow().isoformat(timespec='minutes')}",
+    ).save()
+    case_audit.log(
+        tenant_id=user.tenant_id, user_id=user.user_id,
+        user_display=user.display_name, ip_address=user.ip_address,
+        event_type=AuditEventType.CONVERSATION_STARTED,
+        case_id=str(case.id), conversation_id=str(conv.id),
+        summary=f"Started conversation on case {case.case_number}",
+    )
+    return conv.to_dict()
+
+
+@router.get("/cases/{case_id}/conversations")
+def list_conversations(case_id: str, user: CurrentUser = Depends(current_user)):
+    case = Case.objects(id=case_id, tenant_id=user.tenant_id).first()
+    if not case:
+        raise HTTPException(404, "Case not found")
+    convs = Conversation.objects(case=case).order_by("-last_message_at")
+    return {"conversations": [c.to_dict() for c in convs]}
+
+
+@router.get("/conversations/{conversation_id}/messages")
+def list_messages(conversation_id: str, user: CurrentUser = Depends(current_user)):
+    conv = Conversation.objects(id=conversation_id, tenant_id=user.tenant_id).first()
+    if not conv:
+        raise HTTPException(404, "Conversation not found")
+    msgs = Message.objects(conversation=conv).order_by("timestamp")
+    return {
+        "conversation": conv.to_dict(),
+        "messages": [m.to_dict() for m in msgs],
+    }
+
+
+CITATION_INSTRUCTIONS = """\
+=== CITATION REQUIREMENTS — MANDATORY ===
+
+Every factual claim in your response MUST be followed by a citation token of
+the EXACT form:
+
+  [src: <filename>, L<line>]
+
+- <filename> must match exactly one of the document filenames listed below.
+- L<line> must reference a line number that appears as [L<n>] in the document text.
+- Cite the most specific line that supports the claim. If a claim spans
+  multiple lines, cite the first relevant line.
+- Multiple citations for one claim are allowed, separated by spaces:
+    [src: patrol-report-92-04-1107.pdf, L17] [src: me-preliminary-92-04-1107.pdf, L22]
+- DO NOT cite media inputs (you don't have their contents in this prompt).
+- DO NOT invent line numbers. If you can't find a supporting line, say so
+  in the response and DO NOT emit a citation for that claim.
+- If your response is a list (e.g. a timeline), put the citation at the END
+  of each item.
+
+Examples of correctly-cited factual claims:
+
+  - Body discovered at Riverside Park north boat launch at 06:18 hrs [src: patrol-report-92-04-1107.pdf, L7]
+  - Decedent worked the 5pm-1am shift on 04/11/1992 [src: detective-supp-92-04-1107.pdf, L11]
+  - Cause of death was blunt-force trauma to the occipital skull [src: me-preliminary-92-04-1107.pdf, L9]
+
+Inferences vs facts: prefix inferred statements with "[inferred] " and DO NOT
+emit a citation for them. Example:
+  - [inferred] The keyring on the beach likely fell from the decedent's hand during the assault.
+"""
+
+
+def _build_system_prompt(case: Case, documents_in_context: list[Document], media_in_context: list[MediaInput]) -> str:
+    parts = [
+        "You are an AI assistant supporting a law enforcement detective on a cold case.",
+        f"Case number: {case.case_number}. Title: {case.title}. Classification: {case.classification}.",
+        "Your output may become part of an official report under California Penal Code §13663.",
+        "Be factual and rely strictly on the documents provided.",
+        "If information is missing or ambiguous, say so plainly — do not speculate.",
+    ]
+    if documents_in_context:
+        parts.append("")
+        parts.append(CITATION_INSTRUCTIONS)
+        parts.append("=== DOCUMENTS IN CONTEXT (with [L<n>] line anchors) ===")
+        for d in documents_in_context:
+            text = extract_text(d)
+            numbered = number_lines(text) if text else "[document text could not be extracted — only the filename is known]"
+            parts.append("")
+            parts.append(f"--- BEGIN DOCUMENT: {d.original_filename} (sha256={d.sha256[:12]}…) ---")
+            parts.append(numbered)
+            parts.append(f"--- END DOCUMENT: {d.original_filename} ---")
+    if media_in_context:
+        parts.append("")
+        parts.append("=== MEDIA INPUTS REFERENCED (not transcribed in this pass) ===")
+        for m in media_in_context:
+            parts.append(f"- {m.source_type} (sha256={m.sha256[:12]}…, duration={m.duration_seconds}s)"
+                         f" — {m.description or 'no description'}")
+        parts.append("Do not cite media inputs — their contents are NOT available to you here.")
+    return "\n".join(parts)
+
+
+@router.post("/conversations/{conversation_id}/messages", status_code=201)
+def send_message(conversation_id: str, body: SendMessageBody, user: CurrentUser = Depends(current_user)):
+    conv = Conversation.objects(id=conversation_id, tenant_id=user.tenant_id).first()
+    if not conv:
+        raise HTTPException(404, "Conversation not found")
+
+    case = conv.case  # ReferenceField is resolved on access
+
+    # Resolve in-context documents / media for the system prompt + lineage.
+    documents = list(Document.objects(
+        id__in=body.in_context_document_ids, case=case,
+    )) if body.in_context_document_ids else []
+    media = list(MediaInput.objects(
+        id__in=body.in_context_media_ids, case=case,
+    )) if body.in_context_media_ids else []
+
+    # Persist user message (append-only).
+    user_msg = Message(
+        tenant_id=user.tenant_id, conversation=conv,
+        role=MessageRole.USER.value, content=body.content,
+        parent_message_id=body.parent_message_id,
+        user_id=user.user_id,
+        in_context_document_ids=[str(d.id) for d in documents],
+        in_context_media_ids=[str(m.id) for m in media],
+    ).save()
+    case_audit.log(
+        tenant_id=user.tenant_id, user_id=user.user_id,
+        user_display=user.display_name, ip_address=user.ip_address,
+        event_type=AuditEventType.MESSAGE_USER,
+        case_id=str(case.id), conversation_id=str(conv.id), message_id=str(user_msg.id),
+        summary=body.content[:160],
+        detail={
+            "in_context_document_ids": user_msg.in_context_document_ids,
+            "in_context_media_ids": user_msg.in_context_media_ids,
+        },
+    )
+
+    # Call the LLM.
+    llm = get_llm_provider()
+    system_prompt = _build_system_prompt(case, documents, media)
+    response = llm.chat(system=system_prompt, user=body.content)
+
+    # Persist assistant response.
+    assistant_msg = Message(
+        tenant_id=user.tenant_id, conversation=conv,
+        role=MessageRole.ASSISTANT.value, content=response.content,
+        parent_message_id=str(user_msg.id),
+        user_id=user.user_id,
+        in_context_document_ids=[str(d.id) for d in documents],
+        in_context_media_ids=[str(m.id) for m in media],
+        model=response.model, provider=response.provider,
+        prompt_tokens=response.prompt_tokens, completion_tokens=response.completion_tokens,
+        extra=response.extra,
+    ).save()
+    case_audit.log(
+        tenant_id=user.tenant_id, user_id=user.user_id,
+        user_display=user.display_name, ip_address=user.ip_address,
+        event_type=AuditEventType.MESSAGE_ASSISTANT,
+        case_id=str(case.id), conversation_id=str(conv.id), message_id=str(assistant_msg.id),
+        summary=f"{response.provider}:{response.model} responded ({response.completion_tokens} tokens)",
+        detail={"model": response.model, "provider": response.provider},
+    )
+
+    conv.last_message_at = datetime.utcnow()
+    conv.save()
+    case.last_activity_at = datetime.utcnow()
+    case.save()
+
+    return {"user_message": user_msg.to_dict(), "assistant_message": assistant_msg.to_dict()}
