@@ -384,6 +384,14 @@ export async function seedSyntheticDemo(): Promise<{
   return data;
 }
 
+export async function seedCivilRightsCases(): Promise<{
+  cases: { case_id: string; case_number: string; created: boolean; documents?: string[]; regenerated_pdfs?: number }[];
+  errors: { case_number: string; error: string }[];
+}> {
+  const { data } = await http.post(`/demo/seed-civil-rights`, undefined, { timeout: 180000 });
+  return data;
+}
+
 export async function getCaseAuditSummary(caseId: string): Promise<{
   case: Case;
   event_counts: Record<string, number>;

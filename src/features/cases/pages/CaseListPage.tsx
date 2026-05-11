@@ -3,6 +3,7 @@ import { useState } from "react";
 import {
   createCase,
   listCases,
+  seedCivilRightsCases,
   seedSyntheticDemo,
   type CaseClassification,
   type Case as CaseT,
@@ -167,6 +168,15 @@ export default function CaseListPage() {
     },
   });
 
+  const civilRightsMutation = useMutation({
+    mutationFn: () => seedCivilRightsCases(),
+    onSuccess: (res) => {
+      qc.invalidateQueries({ queryKey: caseKeys.all });
+      const first = res.cases[0];
+      if (first) setHashPath(`${ROUTES.casePrefix}${first.case_id}`);
+    },
+  });
+
   return (
     <div className="p-6">
       <div className="flex items-center justify-between mb-5">
@@ -185,6 +195,15 @@ export default function CaseListPage() {
             title="Create the synthetic 1992 Riverside Park homicide demo case with 4 PDFs and 2 media inputs."
           >
             {seedMutation.isPending ? "Seeding…" : "🧪 Load demo case"}
+          </button>
+          <button
+            type="button"
+            onClick={() => civilRightsMutation.mutate()}
+            disabled={civilRightsMutation.isPending}
+            className="px-3 py-1.5 text-sm rounded border border-slate-300 hover:bg-slate-50 disabled:opacity-50"
+            title="Download 3 real public-domain federal investigative case files (Civil Rights Cold Case Records Review Board)."
+          >
+            {civilRightsMutation.isPending ? "Downloading PDFs…" : "📜 Load real cold cases"}
           </button>
           <button
             type="button"
