@@ -1,7 +1,7 @@
 # Cold Case — Comprehensive PRD
 
-**Version:** 0.4.0 (MVP backend implemented + §13663 smoke tests green)
-**Status:** backend MVP landed locally — frontend + real Copilot wiring next
+**Version:** 0.5.0 (F7/F8/F9 reporting surface designed; rules #17–#22 codified after three-reviewer pass)
+**Status:** PRD locked for the chain-PDF + discovery-package + editorial-diff batch; execution next
 **Date:** 2026-05-11
 **Sources:**
 - `docs/usecase-transcript.txt` — interview with Detective Gaudi (cold case investigator) + IT sponsor, 2026-05-11
@@ -163,6 +163,96 @@ Explicitly **out of scope** to keep MVP focused (per Dan's stated scope discipli
 - **Rule:** Cold Case retains lineage **metadata** (incl. first drafts) per the statute. Source documents live in the agency's storage; their lifecycle is the agency's responsibility, but Cold Case will refuse to purge metadata for a Conversation that produced a still-retained official report.
 - **Acceptance:** for any approved report, the first AI draft + the full Conversation tree remain retrievable until the agency explicitly attests the underlying report is no longer retained.
 
+### F7 — Chain-of-Custody PDF (per signed report)
+
+- **What:** a printable PDF rendering of `GET /audit/reports/{id}/chain` that travels alongside the signed-report PDF. Contains, in order:
+  1. **Cover page** mirroring the signed-report identifiers (Report ID, Case #, signed-content_sha256, AI program(s) used + version, signer + badge + signed_at) and a **tamper-detection hash** (see *Audit-integrity hash* below) printed in the footer.
+  2. **Case header** + the case-level §13663 disclosure.
+  3. **Source-document inventory** — every Document in context with `(filename, sha256, mime, size, registered_at)`. Pointer-only; no body content.
+  4. **MediaInput inventory** — every `MediaInput` registered to the case with `(source_type, sha256, duration_seconds, captured_at, description)`. Required by §13663(c)(2) — auditor must see what video/audio was input to the AI.
+  5. **Conversation chain** — every user prompt and assistant response in chronological order **including discarded re-asks**. Citation tokens render verbatim (static text). Assistant messages with `extra.refusal_detected=true` are flagged with a red `⚠ REFUSAL DETECTED` marker; the audit reader sees the LLM hedged despite docs being supplied.
+  6. **§13663(b) first AI draft** — verbatim, labeled "Not an officer statement (Penal Code §13663(b))."
+  7. **Revision history** — every revision with its hash + editor + timestamp + note + delta-in-bytes vs the prior revision. The signed revision is flagged.
+  8. **AuditEvent timeline** — every event keyed to this report.
+  9. **Citation coverage stats** — count of factual paragraphs in the signed text vs count carrying a `[src: ...]` citation. Anything below 100% surfaces as a footer line for the auditor to flag.
+  10. **"How to verify"** appendix — names the statutory hooks (§13663(a)(1), (a)(2), (b), (c)(1), (c)(2)), the relative `/audit/reports/{id}/chain` URL, and instructions for re-running the audit-integrity hash.
+- **Why:** today, the chain of custody underlying a signed report is reachable only via a JSON API. When defense counsel or the city attorney subpoenas the prompt history that produced an AI-assisted official report, the agency cannot hand them JSON — they need a paginated, hash-pinned PDF. §13663(c) requires the agency to "maintain an audit trail"; this is the printable form of that trail.
+- **Mechanism:**
+  - New module `services/chain_export.py` (sibling to `report_export.py`) that consumes the existing `/audit/reports/{id}/chain` payload and renders via ReportLab.
+  - New endpoint `GET /reports/{id}/chain.pdf` — streams the file. Cached on disk at `uploads/reports/<report_id>.chain.pdf`. (Audit artifact, deliberate carve-out from rule #17 — see clarified rule below.)
+  - **Auto-pair on export.** When the user signs and exports a report (`POST /reports/{id}/export`), Cold Case generates **both** PDFs in the same operation: `<report_id>.pdf` and `<report_id>.chain.pdf`. Both linked from `Report` (new `chain_artifact_uri` field). When evidence.com push lands (Phase 2) both go together.
+  - **Audit-integrity hash.** Each chain PDF embeds in its footer `chain_sha256 = sha256(report_id || first_ai_draft_hash || signed_content_hash || generated_at || conversation_id || all_revision_hashes_concatenated)`. The same hash is reproducible by hitting `GET /audit/reports/{id}/chain` and recomputing — an auditor with just the PDF can verify integrity without trusting our retention.
+  - Self-identification: chain PDF carries Report ID + Case # + signed-content-hash in the same footer stripe + metadata Keywords as the signed report. Metadata Subject reads "Cold Case Report — chain of custody (§13663(c) audit trail)." Metadata Keywords adds `chain_sha256=<...>` so any DMS auto-indexes.
+  - **Visual treatment:** the chain PDF is *not* a courtroom statement — it is an audit artifact. Diagonal pale watermark "AUDIT TRAIL — NOT AN OFFICIAL REPORT" on every page; identifier stripe uses a different color from the signed report so they don't get confused in a file folder.
+- **UX (per detective-review):** when the user clicks "Export PDF" on a signed report, the post-export action panel shows **both** files explicitly:
+  - `📄 Eleanor Rush — final report.pdf` *Your official report — goes in the case file.*
+  - `🔎 Eleanor Rush — audit trail.pdf` *SB-524 audit trail — for legal review.*
+  - `[Download both]` button + a tooltip distinguishing the two. The detective doesn't have to know what a "chain of custody" is — the UI tells them.
+- **Acceptance:**
+  - Signed PDF + chain PDF generated as a pair on the same `POST /reports/{id}/export`; both downloadable independently via `GET /reports/{id}/pdf` and `GET /reports/{id}/chain.pdf`.
+  - Chain PDF includes: source-doc inventory, media-input inventory, every message (incl. discarded re-asks, with refusal flags surfaced), every revision, every audit event.
+  - Audit-integrity hash present in footer + metadata; reproducible by an auditor hitting the live chain endpoint.
+  - First AI draft section visibly labeled "Not an officer statement (Penal Code §13663(b))."
+  - Citation-coverage stats present and accurate.
+- **Out of scope:** rendering source-document body content inside the chain (the chain *describes* the conversation that produced the signed text, not the source bytes — those live in the discovery package, F8).
+
+### F8 — Discovery Package (per case, per report set)
+
+- **What:** a ZIP bundle containing every artifact a defense motion, DA case package, or city-attorney subpoena would need for a named case (or subset of named reports): signed-report PDFs + chain-of-custody PDFs (from F7) + source-document & media-input pointer manifest + ZIP-level self-signing manifest. Delivered via short-lived signed URL to customer storage; **not retained by Cold Case after delivery.**
+- **Why:** when a discovery motion or DA case package needs everything Cold Case has about one defendant — across one or many reports — manually assembling the bundle is error-prone. A single endpoint that emits a hash-pinned ZIP with a self-attesting manifest makes "give me everything you have on this case" a one-click answer.
+- **Who uses it:** this is a **records-officer / city-attorney** workflow, not a frontline detective workflow. The UI exposes it as **"Export for discovery"** (not "Discovery Package" — courthouse jargon) under a collapsible **Compliance** section on the case detail page, and the button is **gated by the `case.export` permission** so detectives without that role see it as disabled or hidden.
+- **Mechanism:**
+  - `POST /cases/{id}/discovery-package` (body: optional `report_ids[]` to subset, optional `include_source_binaries=false`, optional `reason`). Synchronous up to ≤60s for a case with ≤20 reports; for longer assemblies, returns `{status: "preparing", job_id}` and the UI polls `GET /cases/{id}/discovery-package/{job_id}`.
+  - Bundle contents:
+    - `INDEX.txt` — plaintext, human-readable. Lists every file with one-line description.
+    - `manifest.json` — machine-readable. Fields:
+      - `coldcase_version`, `generated_at`, `requesting_user_id`, `requesting_user_display`, `reason` (free-text)
+      - `case_number`, `case_id`, `report_ids[]`
+      - `files[]` — every embedded file with `{path, sha256, size_bytes, kind}` where `kind ∈ {signed_report, chain_of_custody, source_document, media_input, readme, index}`
+      - `documents[]` — every Document on the case `{filename, storage_uri, sha256, mime_type, size_bytes, registered_at}` (pointer-only by default)
+      - `media_inputs[]` — every MediaInput on the case `{filename_or_descriptor, storage_uri, sha256, source_type, duration_seconds, captured_at, description}`. Required by §13663(c)(2) — defense counsel must see every media item the AI was shown.
+      - `manifest_sha256` — `sha256(concat(file.sha256 for file in files[] sorted by path))`. Self-signing — anyone can verify by re-hashing the embedded files.
+    - `reports/<report_id>.pdf` + `reports/<report_id>.chain.pdf` for each report (F7 outputs).
+    - `documents/<sha256-prefix>__<filename>` — only when `include_source_binaries=true`; otherwise the source-document inventory lives in `manifest.json` as pointers.
+    - `README.md` — explains the bundle structure + how to verify hashes via `sha256sum -c`.
+  - **Data residency for source documents.** Cold Case **does not include source-document binaries** in the discovery ZIP by default — only their `(filename, storage_uri, sha256)` pointer records. Customer storage is the source of truth; if the discovery target needs the binaries, the customer ships them separately from their Azure/S3 with the same hashes for verification. Optional flag `include_source_binaries=true` writes the bytes to the ZIP for customers who'd rather have one self-contained artifact — but this requires explicit customer opt-in per case and produces a `case.discovery_exported` audit event with `included_source_binaries: true` flag for CJIS visibility.
+  - **Delivery & retention (rule #21 below).** The ZIP is generated to a Cold-Case-controlled encrypted temp dir (NOT system `/tmp`), hashed, written to customer storage at the customer-provided URI, the signed URL is returned, and the temp file is unlinked synchronously after a successful write. On upload failure, the temp file is deleted after a 1-hour TTL; manual recovery requires `case.export_recovery` permission and emits an `AuditEvent`. The signed URL has a default TTL of 1 hour, is never logged to external observability systems, and is recorded in the audit event with its expiry only (the URL itself is hashed before log writes).
+  - Audit: a `case.discovery_exported` event captures `{requesting_user_id, requesting_user_display, reason, report_ids, include_source_binaries, manifest_sha256, customer_storage_uri, signed_url_expires_at, signed_url_sha256}`.
+- **UX:** a **Compliance** panel on the case detail page, collapsed by default, contains:
+  - The "Export for discovery" button (disabled with tooltip if user lacks `case.export`).
+  - A reason field (required — pre-populates the audit event).
+  - A toggle "Include source documents in the ZIP" (default off, with a tooltip explaining the data-residency tradeoff).
+  - A live preview of what's in the bundle: N signed reports, N chain PDFs, N documents, N media inputs.
+- **Acceptance:**
+  - Endpoint produces a ZIP for any case in under 60s for cases with ≤20 reports.
+  - `manifest.json` is self-signing: re-computing `sha256(concat(file_hashes))` matches `manifest_sha256`.
+  - `sha256sum -c` against the index passes for every embedded file.
+  - Package opens cleanly in evidence.com and standard DMS tools.
+  - Cold Case has no copy of the ZIP 60s after successful delivery; orphaned temp files (upload failure path) are cleaned within 1 hour.
+  - The signed URL never appears in plaintext in any log line accessible outside the customer tenant.
+- **Out of scope:** redaction of bundle contents (separate workflow); defense-counsel-direct download portal (customer fronts that); media transcription (the manifest lists audio/video but Cold Case doesn't transcribe).
+
+### F9 — Officer's Editorial Work (first-draft vs signed diff)
+
+- **What:** a side-by-side / unified diff that highlights every addition, deletion, and reordering the officer made between the §13663(b) verbatim first AI draft and the signed final text. Available in the UI (collapsible **"Officer's editorial work"** section on the report drawer) and as a printable PDF.
+- **Framing (per detective-review):** this is **not** a "what you deleted" view. It is the **officer's professional editorial record** — the diff between what a tool produced and what a sworn officer signed. The UI language reinforces that editing is correct behavior:
+  > *"Below is every change you made to the AI's first draft. Removing unsupported claims, verifying facts, and improving clarity are your professional responsibilities. The AI is a tool. Your signature means you reviewed everything and stand behind every claim that remained."*
+- **Why:** §13663(b) draws a bright line — drafts are *not* the officer's statement; only the signed final is. The space between them is, by definition, the officer's work product. Under **Brady v. Maryland** (and California Evidence Code §1054.1), if the officer deleted exculpatory language the AI surfaced (e.g., "no defensive wounds were observed" → struck), that's discoverable for the defense. This view makes the delta inspectable in seconds — *both* for self-review by the detective before signing and for legal review afterward.
+- **Mechanism:**
+  - Server: `GET /reports/{id}/diff` returns a JSON unified-diff structure between `Report.first_ai_draft_text_snapshot` and the signed revision's text (the revision whose hash matches `signature.content_sha256`). Optional `?against=<seq>` lets the user diff against any revision (useful during pre-sign self-review).
+  - Server: `GET /reports/{id}/diff.pdf` renders the diff as a print artifact. Self-identifies with the same Report ID footer stripe + audit-integrity hash as the chain PDF.
+  - UI: in the report drawer, add a "Officer's editorial work" collapsible section alongside "§13663(b) first AI draft" and "Revision history". Default-collapsed.
+  - **Color treatment (per UX review):** use **neutral colors with explicit labels**, not red/green which carry good/bad valence. Recommend **blue underline** for "officer added" + **gray strikethrough** for "officer removed from AI draft", with text labels `+ officer added →` and `− AI wrote (you removed) ←` prefixed to each delta paragraph.
+  - **PDF watermark:** "OFFICER'S EDITORIAL WORK — NOT AN OFFICIAL REPORT" diagonal watermark on every page. Header reads "Editorial History (Penal Code §13663(b) work product)."
+  - The diff is computed on every render (cheap — `difflib.ndiff` over reasonable-size text) so it always reflects the current signed text. **The diff is never cached as a separate artifact** — both ends already live on the Report row, and the diff is derivation-only. This is deliberate (rule #17 corollary): no new persistence surface.
+- **Acceptance:**
+  - Diff endpoint returns correct unified-diff for any signed report against its first AI draft.
+  - PDF export renders cleanly with the neutral color + labeled treatment and the editorial-work watermark.
+  - When run against a report where the officer made no edits, the diff is empty and the UI says *"Officer signed the AI's first draft verbatim — no edits."*
+  - When run against a still-in-draft report, the UI shows the diff against the current `final_text` (helps the officer self-review before signing).
+  - The diff response is never stored on disk or in a cache table; recomputed per request.
+- **Out of scope:** semantic / NLP "you removed an exculpatory claim" classifier (Phase 2 idea — see §13); supervisor sign-off on diffs above a threshold (Phase 2); semantic counts ("you removed N sentences from the AI!") — explicitly excluded to avoid creating perverse incentives to under-edit.
+
 ## 6. Data model (MVP)
 
 Entities:
@@ -208,7 +298,16 @@ All entities partition by `app_id="coldcase"` (Launchpad Admin Pattern) and by `
 15. **Implicit document context defaults to "all case docs."** When `POST /conversations/{id}/messages` receives an empty `in_context_document_ids`, the server resolves it to *every document on the case* and records `implicit_document_context=true` on the persisted Message and the `MESSAGE_USER` audit event. Rationale: a detective asking about *this* case expects the AI to know about the case's documents without manual toggling, and "I do not have access to the documents" is the worst possible failure mode for a citation-driven workflow. Media stays explicit (body cam / interview audio is heavy and rarely desired by default).
 16. **OCR fallback for image-only PDFs (text-extraction mode only).** When `COLDCASE_LLM_MULTIMODAL=false` (the legacy dev path used by the mock Ollama provider and any pre-multimodal model), `services/document_text.extract_text` tries `pypdf` first; if the embedded text layer averages fewer than `COLDCASE_OCR_MIN_CHARS_PER_PAGE` non-whitespace characters per page (default 40), it falls back to OCR via `pymupdf` + `pytesseract.image_to_string`. Results are memoized per immutable document version. Pattern mirrors the sibling `ada` project's WCAG remediation pipeline. **In multimodal mode (rule #17) this entire path is bypassed** — the LLM reads the PDF natively.
 
-17. **Data residency: documents bytes never persist on Cold Case (multimodal mode).** When `COLDCASE_LLM_MULTIMODAL=true` and the active LLM provider declares `supports_attachments=True` (OpenAI's gpt-4o / gpt-5.x families, and the future GCC Copilot provider), Cold Case streams each in-context document's bytes inline to the LLM at request time as an `input_file` part. The bytes live only in the request stack frame for the duration of one chat call — Cold Case does NOT extract, OCR, or cache the text, does NOT upload to an OpenAI Files slot, and does NOT log document bodies in audit events. The document body is held only in (a) the customer's primary storage (Azure Blob / S3 / SharePoint), and (b) ephemerally in the LLM provider's request handler for one inference. Cold Case persists only: `storage_uri`, `sha256`, `original_filename`, `mime_type`, `size_bytes`, and the audit lineage of prompts + responses + citations. Citations switch from line-anchored (`[src: file, L<n>]`) to page+quote (`[src: file, p<page>, "<verbatim quote>"]`) so that verification works against the source PDF without any Cold Case-side text mirror. Phase B (future) replaces the local-fs `LocalDocumentStorageProvider` with a customer-storage adapter, eliminating the upload-to-disk step entirely.
+17. **Data residency: source-document binaries never persist on Cold Case (multimodal mode).** When `COLDCASE_LLM_MULTIMODAL=true` and the active LLM provider declares `supports_attachments=True` (OpenAI's gpt-4o / gpt-5.x families, and the future GCC Copilot provider), Cold Case streams each in-context document's bytes inline to the LLM at request time as an `input_file` part. The bytes live only in the request stack frame for the duration of one chat call — Cold Case does NOT extract, OCR, or cache the text, does NOT upload to an OpenAI Files slot, and does NOT log document bodies in audit events. The document body is held only in (a) the customer's primary storage (Azure Blob / S3 / SharePoint), and (b) ephemerally in the LLM provider's request handler for one inference. Cold Case persists only: `storage_uri`, `sha256`, `original_filename`, `mime_type`, `size_bytes`, and the audit lineage of prompts + responses + citations.
+
+    **Carve-out for Cold Case-authored audit artifacts.** Cold Case-generated artifacts that exist because the statute requires us to retain them — the §13663(b) first-AI-draft snapshot, the signed-report PDF (F3), the chain-of-custody PDF (F7), the report revisions (F3a), and on-demand-derived views like the editorial-work diff (F9) — are NOT subject to rule #17. They are required outputs of the audit obligation itself, retention-bound to the Report (rule #14) and the case retention policy (F5). The discovery-package ZIP (F8) IS subject to rule #17 — it is transient and not retained by Cold Case after delivery.
+
+    Citations switch from line-anchored (`[src: file, L<n>]`) to page+quote (`[src: file, p<page>, "<verbatim quote>"]`) so that verification works against the source PDF without any Cold Case-side text mirror. Phase B (future) replaces the local-fs `LocalDocumentStorageProvider` with a customer-storage adapter, eliminating the upload-to-disk step entirely.
+18. **Signed report and chain-of-custody PDF travel as a pair.** Every `POST /reports/{id}/export` produces TWO PDFs in the same operation: `<report_id>.pdf` (the signed report under §13663) and `<report_id>.chain.pdf` (the printable chain of custody under §13663(c)). Both are linked from the Report and both are pushed to evidence.com (or whatever destination the customer configured) as a pair. The chain PDF must not be alterable without re-export, and an auditor with only the chain PDF can resolve back to the live audit endpoint via the Report ID printed in its footer.
+19. **Discovery packages do not persist on Cold Case.** When a `case.discovery_exported` request fires (F8), Cold Case generates the ZIP to a temp dir, writes it to customer storage at a customer-provided URI, returns a short-lived signed URL, and unlinks the local temp file. The ZIP's `manifest.json` is self-signing (a hash over the concatenated file hashes), so any party can verify the bundle's integrity without trusting Cold Case to retain it. Source-document binaries are included only when explicitly requested via `include_source_binaries=true`; default is pointer-only.
+20. **The diff between AI first draft and signed report is the officer's work product.** F9 makes this delta available as a JSON diff and a printable PDF. Under Brady, if the officer deleted exculpatory language the AI surfaced, that change is visible in the diff. The diff itself is not an "official report" — it's an audit artifact, watermarked accordingly. The diff is computed on demand and never cached as a separate artifact (no new persistence surface).
+21. **Discovery-package temp files have a cleanup contract.** Any F8 ZIP assembly that requires temp-disk space writes to a Cold-Case-controlled directory (not system `/tmp`). On successful write to customer storage, the temp file is unlinked synchronously in the same transaction. On upload failure, the temp file is deleted after a 1-hour TTL; manual recovery is permission-gated (`case.export_recovery`) and emits an `AuditEvent`. Signed URLs returned to the requester have a default 1-hour TTL, are never logged in plaintext to external observability systems, and have their `sha256` (not their value) recorded on the `case.discovery_exported` audit event for traceability.
+22. **Adjacent California statutes acknowledged.** Cold Case retention defaults are designed to satisfy the floor set by **Government Code §34090** (records retention for local agencies — generally 2+ years for police records, longer for homicide). Discovery exports (F8) are timed and structured to satisfy **California Evidence Code §1054.1** (formal pre-trial discovery obligations of the prosecution) and to enable prompt **Brady v. Maryland** disclosure of exculpatory material — the F9 editorial-work diff is the primary surface for that latter obligation.
 
 ## 8. Provider architecture
 
@@ -264,9 +363,9 @@ Each row maps a statutory subdivision to the Cold Case feature/rule that satisfi
 | **(a)(2)** | Officer's signature (physical or electronic) verifying review + that facts are true and correct | F3 `POST /reports/{id}/sign` — required to export. Signature payload = user id + timestamp + content hash + IP | §5/F3, §7/#5 |
 | **(a) chapeau** | Agency must "maintain a policy" requiring (a)(1)+(a)(2) on every AI-assisted official report | Ship a policy template under `docs/legal/agency-policy-template.md`; admin attests at tenant setup | open Q #6 |
 | **(b)** | First AI draft retained as long as the official report is retained; drafts are NOT officer statements | F5 + Business rules #3, #6, #10. `Message.is_first_ai_draft=true`, immutable post-promote, retention slaved to `Report.retention`. Audit exports label drafts as non-statements | §5/F5, §6, §7/#3,#6,#10 |
-| **(c)(1)** | Audit trail identifies the person who used AI | Every Message has `user_id`; every Report has `signed_by`; AuditEvent stream is per-user. F4 surfaces this | §5/F4, §6 |
+| **(c)(1)** | Audit trail identifies the person who used AI | Every Message has `user_id`; every Report has `signed_by`; AuditEvent stream is per-user. F4 surfaces this; F7 prints the full chain as a courtroom-grade PDF; F8 bundles all chains for a case | §5/F4, §5/F7, §5/F8, §6 |
 | **(c)(2)** | Audit trail identifies video/audio footage used as input | `MediaInput` entity, linked to Conversation + Report | §6, §7/#7 |
-| **(d)** | Vendor cannot share/sell/otherwise use agency data except for agency, court order, or troubleshooting/bias/accuracy/refinement | Business rule #9 + contractual MSA term + `AuditEvent.vendor_access` for any (c)-purpose access | §7/#9 |
+| **(d)** | Vendor cannot share/sell/otherwise use agency data except for agency, court order, or troubleshooting/bias/accuracy/refinement | Business rule #9 + contractual MSA term + `AuditEvent.vendor_access` for any (c)-purpose access. **Phase 2: F10 Vendor Access Portal** (§13) provides a request-and-approve workflow that makes the contract enforceable in software | §7/#9, §13/F10 |
 | **(e) — "AI" definition** | Systems that "infer from the input it receives how to generate outputs" — covers narrative-drafting + generative report enhancement | All Copilot interactions are in scope. Documented in `services/llm_provider.py` | §8 |
 | **(e) — "official report" definition** | The **final version** signed by the officer | `Report` entity is "official report"; pre-sign drafts are not | §6, §7/#5 |
 | **(e) — "first draft" definition** | The initial document or narrative produced **solely by AI** | `Message.is_first_ai_draft` set only on the assistant Message before any officer edit | §6, §7/#3 |
@@ -285,18 +384,29 @@ Status legend: ✅ = automated smoke test passes locally; ⏳ = not yet covered.
 8. ✅ Same Message cannot be promoted twice → 409. (Smoke test #8.)
 9. ✅ Homicide classification on case-create auto-suggests indefinite retention. (Smoke test #2.)
 
-## 13. Out-of-scope but worth flagging to the agency
+## 13. Out-of-scope for MVP / Phase 2 candidates
 
-These come up adjacent to §13663 and the agency should know Cold Case does **not** address them in MVP:
-- **General records-retention rules** beyond §13663 (e.g., GC §34090, evidence-code retention).
+### Adjacent statutes & frameworks not directly addressed by MVP
+
 - **CJIS-policy compliance** of the GCC Copilot endpoint — that's the agency's M365 GCC posture, not Cold Case's.
-- **Public Records Act / Brady disclosure tooling** — Cold Case stores the data PRA / Brady requests would draw from, but does not implement the request workflow.
-- **Disclosure to defendants** in prosecution — Cold Case provides the exportable audit, but the DA / defense process is outside.
+- **Government Code §34090** records-retention floors — Cold Case's retention defaults satisfy §13663(b) and are configurable per-case (F5); the agency owns the broader records-retention policy.
+- **Evidence Code §1054.1** formal pre-trial discovery cadence — Cold Case provides the artifacts (F8 discovery package, F9 diff) but doesn't drive the §1054.1 timeline; that's the DA's workflow.
+- **Public Records Act** request workflow — Cold Case stores the data a PRA request would draw from; the request portal lives elsewhere.
+
+### Phase 2 features (planned, not in this batch)
+
+- **F10 — Vendor Access Portal.** Surface for Darwin operations staff to request access to agency data under §13663(d)(iii) purposes (troubleshooting, bias mitigation, accuracy improvement, system refinement) via a portal with explicit reason + scope, agency-approval gate, time-boxed access, and a `vendor.access` event stream queryable by the city attorney. Today, rule #9 is enforced contractually + via the audit event schema, but no in-product surface exists for it. F10 makes the contract enforceable in software.
+- **F11 — Detective playground.** An ephemeral "scratch" conversation that lets the detective experiment with prompts before committing them to the auditable record. Trade-off: §13663(c) audit-trail strength wants every prompt logged. F11 design: scratch lives ≤24h and is auto-pruned, OR remains in the chain but is flagged "scratch / pre-promotion" so the city attorney can filter it out. Open question for legal review.
+- **F12 — Second-opinion workflow.** Re-run the same prompt against a different model (e.g., gpt-5.5 ↔ a Claude or GCC-Copilot deployment) to surface inter-model disagreement. Important for high-stakes cases (homicide) where hallucination risk justifies the cost.
+- **F13 — Semantic-change classifier on F9 diff.** Flag the diff segments that match patterns like "officer removed an AI-noted uncertainty" or "officer added an unsourced claim", so the auditor's eye is drawn to high-Brady-relevance changes. This is the natural next step after F9.
+- **F14 — Inline penal-code lookup** in the chat panel — sidebar quick-ref to CalCrim instructions and applicable Penal Code sections without leaving Cold Case.
+- **Log scrubbing for vendor diagnostics.** Any error/diagnostic event shipped to Darwin-side observability is redacted: cited text removed from `[src: ...]` tokens, case numbers hashed, officer names removed. Raw logs stay on the agency's secure backend, accessible only to agency admins and via court order. Captured here as a runbook obligation; will be operationalized when we have a real observability surface.
 
 ## Changelog
 
 | Version | Date | Changes |
 |---|---|---|
+| 0.5.0 | 2026-05-11 | F7 (chain-of-custody PDF auto-paired on export, with media inventory + refusal flags + citation-coverage stats + audit-integrity hash), F8 (discovery-package ZIP with self-signing manifest, signed-URL handoff to customer storage, role-gated "Export for discovery" UI), F9 (officer's-editorial-work diff with neutral color treatment and Brady-aware framing). Business rules #17 clarified (audit-artifact carve-out), #21 added (temp-file cleanup), #22 added (adjacent CA statutes acknowledged). §13 reorganized into out-of-scope vs Phase 2 (F10 vendor portal, F11 playground, F12 second-opinion, F13 semantic diff classifier, F14 inline penal-code lookup, log scrubbing). PRD reviewed by three subagents (statutory completeness, data-residency/threat-model, detective UX) before lock |
 | 0.4.0 | 2026-05-11 | Backend MVP landed: domain models, LLM + DocumentStorage provider seams, F1/F2/F3/F4 routers, §13663-compliant PDF export. End-to-end smoke (17 steps incl. 9 statute-driven checks) green |
 | 0.3.0 | 2026-05-11 | SB-524 / Penal Code §13663 statutory mapping; added Report entity + MediaInput; rewrote business rules and F3 around first-AI-draft + statutory disclosure text; added §12 compliance matrix |
 | 0.2.0 | 2026-05-11 | Requirements extracted from use-case interview (`docs/usecase-transcript.txt`) |
