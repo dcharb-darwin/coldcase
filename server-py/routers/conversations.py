@@ -150,9 +150,17 @@ def send_message(conversation_id: str, body: SendMessageBody, user: CurrentUser 
     case = conv.case  # ReferenceField is resolved on access
 
     # Resolve in-context documents / media for the system prompt + lineage.
-    documents = list(Document.objects(
-        id__in=body.in_context_document_ids, case=case,
-    )) if body.in_context_document_ids else []
+    # If the caller didn't specify documents, default to ALL documents on the
+    # case — a detective asking about THIS case expects the AI to know about
+    # the case's documents without manual toggling. The audit log records
+    # `implicit_document_context=true` so §13663(c) reflects the actual scope.
+    implicit_document_context = not body.in_context_document_ids
+    if implicit_document_context:
+        documents = list(Document.objects(case=case))
+    else:
+        documents = list(Document.objects(id__in=body.in_context_document_ids, case=case))
+    # Media stays explicit — body cam / interview audio is heavy and rarely
+    # desired by default.
     media = list(MediaInput.objects(
         id__in=body.in_context_media_ids, case=case,
     )) if body.in_context_media_ids else []
@@ -165,6 +173,7 @@ def send_message(conversation_id: str, body: SendMessageBody, user: CurrentUser 
         user_id=user.user_id,
         in_context_document_ids=[str(d.id) for d in documents],
         in_context_media_ids=[str(m.id) for m in media],
+        extra={"implicit_document_context": implicit_document_context},
     ).save()
     case_audit.log(
         tenant_id=user.tenant_id, user_id=user.user_id,
@@ -175,6 +184,7 @@ def send_message(conversation_id: str, body: SendMessageBody, user: CurrentUser 
         detail={
             "in_context_document_ids": user_msg.in_context_document_ids,
             "in_context_media_ids": user_msg.in_context_media_ids,
+            "implicit_document_context": implicit_document_context,
         },
     )
 

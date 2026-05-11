@@ -75,4 +75,5 @@ class Message(MEDocument):
             "in_context_media_ids": list(self.in_context_media_ids or []),
             "is_first_ai_draft": bool(self.is_first_ai_draft),
             "first_draft_locked_for_report_id": self.first_draft_locked_for_report_id,
+            "extra": dict(self.extra or {}),
         }

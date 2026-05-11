@@ -128,8 +128,13 @@ export default function ChatPanel({ caseId, documents, media, onPromote, onCitat
       {/* Context picker */}
       {(documents.length > 0 || media.length > 0) && (
         <div className="px-3 py-2 border-b border-slate-100 bg-slate-50 text-xs">
-          <div className="text-slate-500 mb-1">
-            Context for next message (audited per §13663(c)):
+          <div className="text-slate-500 mb-1 flex items-center justify-between gap-2">
+            <span>Context for next message (audited per §13663(c)):</span>
+            {selectedDocIds.size === 0 && documents.length > 0 ? (
+              <span className="text-blue-700">
+                ℹ All {documents.length} case docs in context — click any chip to narrow.
+              </span>
+            ) : null}
           </div>
           <div className="flex flex-wrap gap-1.5">
             {documents.map((d) => (
@@ -265,7 +270,7 @@ export default function ChatPanel({ caseId, documents, media, onPromote, onCitat
         ) : null}
         <div className="flex justify-between items-center mt-2">
           <span className="text-xs text-slate-500">
-            ⌘/Ctrl + Enter to send · {selectedDocIds.size} docs, {selectedMediaIds.size} media in context
+            ⌘/Ctrl + Enter to send · {selectedDocIds.size === 0 ? `all ${documents.length}` : selectedDocIds.size} docs, {selectedMediaIds.size} media in context
           </span>
           <button
             type="button"
