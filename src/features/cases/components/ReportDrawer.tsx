@@ -175,9 +175,10 @@ function ReportEditor({
 
   const signMut = useMutation({
     mutationFn: async () => {
-      // Save edits first, then sign.
+      // Save edits first, then sign. F19: signer identity comes from the
+      // authenticated session server-side; only badge is sent in the body.
       await editReport(reportId, { title, final_text: finalText });
-      return signReport(reportId, { display_name: displayName, badge_number: badge });
+      return signReport(reportId, { badge_number: badge });
     },
     onSuccess: () => {
       refetch();
@@ -351,22 +352,19 @@ function ReportEditor({
             <div className="italic text-slate-600 mt-2">"{report.signature.attestation_text}"</div>
           </div>
         ) : (
-          <div className="grid grid-cols-2 gap-2">
-            <label className="block">
-              <span className="text-xs text-slate-600">Display name</span>
-              <input
-                className="mt-1 w-full border border-slate-300 rounded px-2 py-1 text-sm"
-                value={displayName}
-                onChange={(e) => setDisplayName(e.target.value)}
-                placeholder="Det. J. Smith"
-              />
-            </label>
+          <div className="space-y-2">
+            <div className="text-[11px] text-slate-600 italic">
+              Your signature uses your authenticated identity ({displayName || "current session"}).
+              The badge number you enter is recorded next to your user id for auditor review.
+              §13663(a)(2) requires the signer be the named officer.
+            </div>
             <label className="block">
               <span className="text-xs text-slate-600">Badge #</span>
               <input
                 className="mt-1 w-full border border-slate-300 rounded px-2 py-1 text-sm"
                 value={badge}
                 onChange={(e) => setBadge(e.target.value)}
+                placeholder="e.g. 7787"
               />
             </label>
           </div>
@@ -397,7 +395,7 @@ function ReportEditor({
             <button
               type="button"
               onClick={() => signMut.mutate()}
-              disabled={signMut.isPending || !displayName.trim()}
+              disabled={signMut.isPending}
               className="px-3 py-1.5 text-sm rounded bg-emerald-600 text-white disabled:opacity-50"
               title="§13663(a)(2): signing attests review + factual accuracy. Required before export."
             >

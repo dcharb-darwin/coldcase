@@ -74,6 +74,18 @@ APP_MANIFEST = AppManifest(
             group="Audit",
         ),
 
+        # ── Vendor access (§13663(d), F10/F20) ────────────────────────────
+        "vendor_access.request": PermissionMeta(
+            label="Open a vendor access request",
+            description="Darwin operator opens a §13663(d) carve-out access request. Customer roles (detective, sergeant, auditor) do NOT hold this.",
+            group="Vendor access",
+        ),
+        "vendor_access.approve": PermissionMeta(
+            label="Approve / deny / revoke a vendor access request",
+            description="Agency admin only — separation of duties from `vendor_access.request`. Typically held by the city attorney or records officer.",
+            group="Vendor access",
+        ),
+
         # ── Administration (required) ─────────────────────────────────────
         "admin.view": PermissionMeta(
             label="Access admin panel",

@@ -36,6 +36,7 @@ class AuditEventType(str, Enum):
     VENDOR_ACCESS_DENIED = "vendor.access.denied"
     VENDOR_ACCESS_REVOKED = "vendor.access.revoked"
     VENDOR_ACCESS_USED = "vendor.access.used"
+    VENDOR_ACCESS_SCOPE_VIOLATION = "vendor.access.scope_violation"
     PURGE_BLOCKED = "purge.blocked"             # §13663(b) refused a purge
     FIRST_DRAFT_MUTATION_BLOCKED = "first_draft.mutation_blocked"
 

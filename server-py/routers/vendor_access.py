@@ -22,7 +22,7 @@ from models import (
     VendorAccessPurpose, VendorAccessRequest, VendorAccessScopeKind, VendorAccessStatus,
 )
 from models.audit_event import AuditEventType
-from routers._deps import CurrentUser, current_user
+from routers._deps import CurrentUser, current_user, require_perm
 from services import case_audit
 
 
@@ -74,6 +74,7 @@ def _auto_expire_if_due(req: VendorAccessRequest) -> None:
 
 
 @router.post("", status_code=201)
+@require_perm("vendor_access.request")
 def open_request(body: OpenRequestBody, user: CurrentUser = Depends(current_user)):
     expires_at = datetime.utcnow() + timedelta(hours=body.expires_in_hours)
     req = VendorAccessRequest(
@@ -106,6 +107,7 @@ def open_request(body: OpenRequestBody, user: CurrentUser = Depends(current_user
 
 
 @router.get("")
+@require_perm("audit.read")
 def list_requests(
     user: CurrentUser = Depends(current_user),
     status: Optional[VendorAccessStatus] = Query(None),
@@ -124,6 +126,7 @@ def list_requests(
 
 
 @router.get("/{request_id}")
+@require_perm("audit.read")
 def get_request(request_id: str, user: CurrentUser = Depends(current_user)):
     req = VendorAccessRequest.objects(id=request_id, tenant_id=user.tenant_id).first()
     if not req:
@@ -133,6 +136,7 @@ def get_request(request_id: str, user: CurrentUser = Depends(current_user)):
 
 
 @router.post("/{request_id}/approve")
+@require_perm("vendor_access.approve")
 def approve_request(request_id: str, user: CurrentUser = Depends(current_user)):
     req = VendorAccessRequest.objects(id=request_id, tenant_id=user.tenant_id).first()
     if not req:
@@ -154,6 +158,7 @@ def approve_request(request_id: str, user: CurrentUser = Depends(current_user)):
 
 
 @router.post("/{request_id}/deny")
+@require_perm("vendor_access.approve")
 def deny_request(request_id: str, body: DenyBody, user: CurrentUser = Depends(current_user)):
     req = VendorAccessRequest.objects(id=request_id, tenant_id=user.tenant_id).first()
     if not req:
@@ -176,6 +181,7 @@ def deny_request(request_id: str, body: DenyBody, user: CurrentUser = Depends(cu
 
 
 @router.post("/{request_id}/revoke")
+@require_perm("vendor_access.approve")
 def revoke_request(request_id: str, body: RevokeBody, user: CurrentUser = Depends(current_user)):
     req = VendorAccessRequest.objects(id=request_id, tenant_id=user.tenant_id).first()
     if not req:
@@ -197,6 +203,7 @@ def revoke_request(request_id: str, body: RevokeBody, user: CurrentUser = Depend
 
 
 @router.post("/{request_id}/record-access")
+@require_perm("vendor_access.request")
 def record_access(request_id: str, body: RecordAccessBody, user: CurrentUser = Depends(current_user)):
     """Called by the Darwin operator each time they actually pull data
     during the approval window. Hard-fails 403 if the request isn't

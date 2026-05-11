@@ -235,6 +235,24 @@ export async function registerDocument(caseId: string, body: {
   return data;
 }
 
+export async function uploadDocument(
+  caseId: string,
+  file: File,
+  mimeTypeOverride?: string,
+): Promise<Document> {
+  // Server accepts up to 50 MB. We let the request fail naturally past that
+  // rather than reimplementing the limit here — single source of truth.
+  const form = new FormData();
+  form.append("file", file);
+  if (mimeTypeOverride) form.append("mime_type_override", mimeTypeOverride);
+  const { data } = await http.post<Document>(
+    `/cases/${caseId}/documents/upload`,
+    form,
+    { headers: { "Content-Type": "multipart/form-data" } },
+  );
+  return data;
+}
+
 export async function registerMedia(caseId: string, body: {
   storage_uri: string;
   source_type: MediaSourceType;
@@ -312,7 +330,8 @@ export async function editReport(id: string, body: {
 }
 
 export async function signReport(id: string, body: {
-  display_name?: string;
+  // F19 — display_name is intentionally NOT accepted; the server derives it
+  // from the authenticated UserContext. Only badge_number is body-controlled.
   badge_number?: string;
   attestation_text?: string;
 }): Promise<Report> {

@@ -9,6 +9,10 @@ def hash_text(text: str | None) -> str:
     return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
 
 
+def sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
 def hash_file(path: str, *, chunk_size: int = 1024 * 1024) -> tuple[str, int]:
     """Return (sha256_hex, byte_count)."""
     h = hashlib.sha256()

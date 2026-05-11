@@ -14,12 +14,16 @@ from models import (
 )
 from models.audit_event import AuditEventType
 from providers.llm import AttachedFile, get_llm_provider
-from routers._deps import CurrentUser, current_user
+from routers._deps import CurrentUser, current_user, require_perm
 from services import case_audit
 from services.document_text import extract_text, number_lines
+from services.vendor_scope import enforce_vendor_scope
 
 
-router = APIRouter(tags=["Conversations"])
+router = APIRouter(
+    tags=["Conversations"],
+    dependencies=[Depends(enforce_vendor_scope)],
+)
 
 
 # ── Bodies ──────────────────────────────────────────────────────────────────
@@ -42,6 +46,7 @@ class SendMessageBody(BaseModel):
 
 
 @router.post("/cases/{case_id}/conversations", status_code=201)
+@require_perm("conversation.create")
 def start_conversation(case_id: str, body: StartConversationBody, user: CurrentUser = Depends(current_user)):
     case = Case.objects(id=case_id, tenant_id=user.tenant_id).first()
     if not case:
@@ -61,6 +66,7 @@ def start_conversation(case_id: str, body: StartConversationBody, user: CurrentU
 
 
 @router.get("/cases/{case_id}/conversations")
+@require_perm("conversation.read")
 def list_conversations(case_id: str, user: CurrentUser = Depends(current_user)):
     case = Case.objects(id=case_id, tenant_id=user.tenant_id).first()
     if not case:
@@ -70,6 +76,7 @@ def list_conversations(case_id: str, user: CurrentUser = Depends(current_user)):
 
 
 @router.get("/conversations/{conversation_id}/messages")
+@require_perm("conversation.read")
 def list_messages(conversation_id: str, user: CurrentUser = Depends(current_user)):
     conv = Conversation.objects(id=conversation_id, tenant_id=user.tenant_id).first()
     if not conv:
@@ -250,6 +257,7 @@ def _build_system_prompt(
 
 
 @router.post("/conversations/{conversation_id}/messages", status_code=201)
+@require_perm("conversation.create")
 def send_message(conversation_id: str, body: SendMessageBody, user: CurrentUser = Depends(current_user)):
     conv = Conversation.objects(id=conversation_id, tenant_id=user.tenant_id).first()
     if not conv:

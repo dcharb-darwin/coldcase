@@ -22,7 +22,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 
 from models import Case, Document
-from routers._deps import CurrentUser, current_user
+from routers._deps import CurrentUser, current_user, require_perm
 
 
 router = APIRouter(prefix="/prompts", tags=["Prompts"])
@@ -131,6 +131,7 @@ SUGGESTIONS = [
 
 
 @router.get("/suggestions")
+@require_perm("case.read")
 def list_suggestions(
     user: CurrentUser = Depends(current_user),
     case_id: Optional[str] = Query(None, description="Case ID — if provided, return templates rendered against the case's documents."),

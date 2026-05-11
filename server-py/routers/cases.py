@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from models import (
@@ -14,11 +14,15 @@ from models import (
 )
 from models.audit_event import AuditEventType
 from providers.document_storage import get_document_storage_provider
-from routers._deps import CurrentUser, current_user
+from routers._deps import CurrentUser, current_user, require_perm
 from services import case_audit
+from services.vendor_scope import enforce_vendor_scope
 
 
-router = APIRouter(prefix="/cases", tags=["Cases"])
+router = APIRouter(
+    prefix="/cases", tags=["Cases"],
+    dependencies=[Depends(enforce_vendor_scope)],
+)
 
 
 # ── Pydantic bodies (module-scope — see gotchas) ────────────────────────────
@@ -66,12 +70,14 @@ class RegisterMediaBody(BaseModel):
 
 
 @router.get("")
+@require_perm("case.read")
 def list_cases(user: CurrentUser = Depends(current_user)):
     cases = Case.objects(tenant_id=user.tenant_id).order_by("-last_activity_at")
     return {"cases": [c.to_dict() for c in cases]}
 
 
 @router.post("", status_code=201)
+@require_perm("case.create")
 def create_case(body: CreateCaseBody, user: CurrentUser = Depends(current_user)):
     if Case.objects(tenant_id=user.tenant_id, case_number=body.case_number).first():
         raise HTTPException(409, f"Case number {body.case_number!r} already exists")
@@ -106,6 +112,7 @@ def create_case(body: CreateCaseBody, user: CurrentUser = Depends(current_user))
 
 
 @router.get("/{case_id}")
+@require_perm("case.read")
 def get_case(case_id: str, user: CurrentUser = Depends(current_user)):
     case = Case.objects(id=case_id, tenant_id=user.tenant_id).first()
     if not case:
@@ -120,6 +127,7 @@ def get_case(case_id: str, user: CurrentUser = Depends(current_user)):
 
 
 @router.patch("/{case_id}")
+@require_perm("case.edit")
 def update_case(case_id: str, body: UpdateCaseBody, user: CurrentUser = Depends(current_user)):
     case = Case.objects(id=case_id, tenant_id=user.tenant_id).first()
     if not case:
@@ -171,6 +179,7 @@ def update_case(case_id: str, body: UpdateCaseBody, user: CurrentUser = Depends(
 
 
 @router.post("/{case_id}/documents", status_code=201)
+@require_perm("document.register")
 def register_document(case_id: str, body: RegisterDocumentBody, user: CurrentUser = Depends(current_user)):
     case = Case.objects(id=case_id, tenant_id=user.tenant_id).first()
     if not case:
@@ -213,7 +222,83 @@ def register_document(case_id: str, body: RegisterDocumentBody, user: CurrentUse
     return document.to_dict()
 
 
+# Max upload size — keep modest until the customer wires real blob storage.
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
+
+
+@router.post("/{case_id}/documents/upload", status_code=201)
+@require_perm("document.register")
+def upload_document(
+    case_id: str,
+    file: UploadFile = File(...),
+    mime_type_override: str = Form(""),
+    user: CurrentUser = Depends(current_user),
+):
+    """Multipart upload path — accepts the binary, writes it through the
+    artifact store, and registers the Document. Used by the in-app file
+    picker for dev/demo and small-agency single-tenant deployments. For
+    production the customer points `PROVIDER_DOCUMENT_STORAGE` at their
+    own blob storage and continues to use `register_document` against
+    pre-existing URIs."""
+    from lib.hash import sha256_bytes
+    from services.artifact_store import get_artifact_store
+
+    case = Case.objects(id=case_id, tenant_id=user.tenant_id).first()
+    if not case:
+        raise HTTPException(404, "Case not found")
+
+    data = file.file.read(MAX_UPLOAD_BYTES + 1)
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, f"File exceeds {MAX_UPLOAD_BYTES} bytes")
+    if not data:
+        raise HTTPException(422, "Empty upload")
+
+    sha = sha256_bytes(data)
+    mime = mime_type_override or file.content_type or "application/octet-stream"
+    # Key the file under the case so the ArtifactStore layout stays browsable.
+    key = f"documents/{case.id}/{sha}-{file.filename}"
+    stored = get_artifact_store().put(key, data, content_type=mime)
+
+    page_count = 0
+    if mime == "application/pdf":
+        try:
+            from pypdf import PdfReader
+            from io import BytesIO
+            page_count = len(PdfReader(BytesIO(data)).pages)
+        except Exception:  # noqa: BLE001 — best effort; not blocking
+            page_count = 0
+
+    document = Document(
+        tenant_id=user.tenant_id,
+        case=case,
+        storage_uri=stored.uri,
+        sha256=sha,
+        original_filename=file.filename or "upload.bin",
+        mime_type=mime,
+        page_count=page_count,
+        size_bytes=len(data),
+        uploaded_by=user.user_id,
+    ).save()
+
+    case.last_activity_at = datetime.utcnow()
+    case.save()
+
+    case_audit.log(
+        tenant_id=user.tenant_id, user_id=user.user_id,
+        user_display=user.display_name, ip_address=user.ip_address,
+        event_type=AuditEventType.DOCUMENT_REGISTERED,
+        case_id=str(case.id), document_id=str(document.id),
+        summary=f"Uploaded {document.original_filename}",
+        detail={
+            "sha256": sha, "size_bytes": len(data),
+            "storage_uri": stored.uri, "source": "upload",
+        },
+    )
+    return document.to_dict()
+
+
 @router.get("/{case_id}/documents")
+@require_perm("case.read")
 def list_documents(case_id: str, user: CurrentUser = Depends(current_user)):
     case = Case.objects(id=case_id, tenant_id=user.tenant_id).first()
     if not case:
@@ -223,6 +308,7 @@ def list_documents(case_id: str, user: CurrentUser = Depends(current_user)):
 
 
 @router.get("/{case_id}/documents/{doc_id}/text")
+@require_perm("case.read")
 def get_document_text(case_id: str, doc_id: str, user: CurrentUser = Depends(current_user)):
     """Extract and return the document's text content for inline display.
     Mirrors what the LLM would see when the document is added to context.
@@ -252,6 +338,7 @@ def get_document_text(case_id: str, doc_id: str, user: CurrentUser = Depends(cur
 
 
 @router.get("/{case_id}/documents/{doc_id}/text-status")
+@require_perm("case.read")
 def get_document_text_status(case_id: str, doc_id: str, user: CurrentUser = Depends(current_user)):
     """Lightweight status for the document sidebar badge. Triggers extraction
     if cold, but result is cached after first call per immutable (id, sha256)."""
@@ -269,6 +356,7 @@ def get_document_text_status(case_id: str, doc_id: str, user: CurrentUser = Depe
 
 
 @router.post("/{case_id}/media", status_code=201)
+@require_perm("media.register")
 def register_media(case_id: str, body: RegisterMediaBody, user: CurrentUser = Depends(current_user)):
     """§13663(c)(2) — any video/audio used as AI input must be in the audit trail."""
     case = Case.objects(id=case_id, tenant_id=user.tenant_id).first()
@@ -314,6 +402,7 @@ def register_media(case_id: str, body: RegisterMediaBody, user: CurrentUser = De
 
 
 @router.get("/{case_id}/media")
+@require_perm("case.read")
 def list_media(case_id: str, user: CurrentUser = Depends(current_user)):
     case = Case.objects(id=case_id, tenant_id=user.tenant_id).first()
     if not case:
@@ -332,6 +421,7 @@ class DiscoveryPackageBody(BaseModel):
 
 
 @router.post("/{case_id}/discovery-package", status_code=201)
+@require_perm("case.export")
 def export_discovery_package(case_id: str, body: DiscoveryPackageBody, user: CurrentUser = Depends(current_user)):
     """F8 — one-click discovery bundle. Records-officer / city-attorney
     workflow, gated by `case.export` in production (MVP: open to all
@@ -369,6 +459,7 @@ def export_discovery_package(case_id: str, body: DiscoveryPackageBody, user: Cur
 
 
 @router.get("/{case_id}/audit-manifest.pdf")
+@require_perm("audit.read")
 def download_case_audit_manifest(case_id: str, user: CurrentUser = Depends(current_user)):
     """F15 — Per-case audit manifest PDF. Sibling to F7 (per-report chain).
     Cached on disk; regenerated only if the case has had activity since the
@@ -398,6 +489,7 @@ def download_case_audit_manifest(case_id: str, user: CurrentUser = Depends(curre
 
 
 @router.get("/{case_id}/discovery-package/{zip_filename}")
+@require_perm("case.export")
 def download_discovery_package(case_id: str, zip_filename: str, user: CurrentUser = Depends(current_user)):
     """Stream a previously-generated discovery ZIP. In production this is
     replaced by a customer-storage signed URL with 1h TTL (rule #21)."""

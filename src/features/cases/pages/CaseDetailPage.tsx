@@ -9,6 +9,7 @@ import {
   listConversations,
   listReportsForCase,
   registerDocument,
+  uploadDocument,
   registerMedia,
   startConversation,
   type Document,
@@ -119,7 +120,10 @@ export default function CaseDetailPage({ caseId }: CaseDetailPageProps) {
         {/* Left: documents + media + reports */}
         <aside className="col-span-3 border-r border-slate-200 bg-slate-50 overflow-y-auto">
           <SidebarSection title="Documents" count={documents.length}>
-            <RegisterDocumentInline caseId={caseId} onDone={() => qc.invalidateQueries({ queryKey: caseKeys.detail(caseId) })} />
+            <div className="flex flex-col gap-1.5">
+              <UploadDocumentInline caseId={caseId} onDone={() => qc.invalidateQueries({ queryKey: caseKeys.detail(caseId) })} />
+              <RegisterDocumentInline caseId={caseId} onDone={() => qc.invalidateQueries({ queryKey: caseKeys.detail(caseId) })} />
+            </div>
             <ul className="space-y-1 mt-2">
               {documents.map((d) => (
                 <li key={d.id}>
@@ -450,6 +454,39 @@ function DocumentViewer({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function UploadDocumentInline({ caseId, onDone }: { caseId: string; onDone: () => void }) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const m = useMutation({
+    mutationFn: (file: File) => uploadDocument(caseId, file),
+    onSuccess: () => {
+      if (inputRef.current) inputRef.current.value = "";
+      onDone();
+    },
+  });
+  return (
+    <div className="space-y-1">
+      <button
+        type="button"
+        onClick={() => inputRef.current?.click()}
+        disabled={m.isPending}
+        className="text-xs text-blue-700 hover:underline disabled:opacity-50"
+      >
+        {m.isPending ? "Uploading…" : "+ Upload document"}
+      </button>
+      <input
+        ref={inputRef}
+        type="file"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) m.mutate(f);
+        }}
+      />
+      {m.error ? <div className="text-[11px] text-red-700">{(m.error as Error).message}</div> : null}
     </div>
   );
 }

@@ -18,13 +18,18 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from models import Case, Conversation, Message
 from models.audit_event import AuditEvent
 from models.report import Report, ReportStatus
-from routers._deps import CurrentUser, current_user
+from routers._deps import CurrentUser, current_user, require_perm
+from services.vendor_scope import enforce_vendor_scope
 
 
-router = APIRouter(prefix="/audit", tags=["Audit"])
+router = APIRouter(
+    prefix="/audit", tags=["Audit"],
+    dependencies=[Depends(enforce_vendor_scope)],
+)
 
 
 @router.get("/reports/{report_id}/chain")
+@require_perm("audit.read")
 def report_chain(report_id: str, user: CurrentUser = Depends(current_user)):
     """The full prompt → response chain underpinning a Report. This is the
     artifact a city attorney would request under §13663(c)."""
@@ -64,6 +69,7 @@ def report_chain(report_id: str, user: CurrentUser = Depends(current_user)):
 
 
 @router.get("/events")
+@require_perm("audit.read")
 def list_events(
     user: CurrentUser = Depends(current_user),
     case_id: Optional[str] = Query(None),
@@ -90,6 +96,7 @@ def list_events(
 
 
 @router.get("/anomalies")
+@require_perm("audit.read")
 def anomalies_report(
     user: CurrentUser = Depends(current_user),
     since: Optional[datetime] = Query(None),
@@ -169,6 +176,7 @@ def anomalies_report(
 
 
 @router.get("/ai-programs")
+@require_perm("audit.read")
 def ai_program_inventory(
     user: CurrentUser = Depends(current_user),
     since: Optional[datetime] = Query(None, description="Filter to reports signed at or after this ISO datetime"),
@@ -225,6 +233,7 @@ def ai_program_inventory(
 
 
 @router.get("/cases/{case_id}/summary")
+@require_perm("audit.read")
 def case_audit_summary(case_id: str, user: CurrentUser = Depends(current_user)):
     """High-level audit summary for a case — counts by event type, list of
     signed reports, list of AI programs ever used in this case."""

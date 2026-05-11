@@ -25,14 +25,18 @@ from models.report import (
     AIProgram, AI_EDITOR_ID, OfficerSignature, Report, ReportRevision, ReportStatus,
     REVISION_NOTE_AI_FIRST_DRAFT, REVISION_NOTE_INITIAL_OVERRIDE, REVISION_NOTE_OFFICER_EDIT,
 )
-from routers._deps import CurrentUser, current_user
+from routers._deps import CurrentUser, current_user, require_perm
 from services import case_audit
 from services.chain_export import export_chain_pdf
 from services.diff_export import compute_diff, export_diff_pdf
 from services.report_export import export_report_pdf
+from services.vendor_scope import enforce_vendor_scope
 
 
-router = APIRouter(prefix="/reports", tags=["Reports"])
+router = APIRouter(
+    prefix="/reports", tags=["Reports"],
+    dependencies=[Depends(enforce_vendor_scope)],
+)
 
 
 # ── Bodies ──────────────────────────────────────────────────────────────────
@@ -55,8 +59,11 @@ class EditReportBody(BaseModel):
 
 
 class SignBody(BaseModel):
+    """§13663(a)(2) hardening (F19): the officer's name + user_id come from
+    the authenticated UserContext on the server, NOT from this body. Only
+    badge_number (paired with user_id in the audit log so any mismatch is
+    reviewable) and an optional attestation_text override are body-controlled."""
     badge_number: str = ""
-    display_name: str = ""
     attestation_text: Optional[str] = None
 
 
@@ -68,6 +75,7 @@ class ExportBody(BaseModel):
 
 
 @router.post("/promote", status_code=201)
+@require_perm("report.draft")
 def promote_message_to_report(body: PromoteBody, user: CurrentUser = Depends(current_user)):
     """Take an assistant Message and create a Report whose §13663(b) 'first
     draft' is that Message. The message becomes immutable."""
@@ -150,6 +158,7 @@ def promote_message_to_report(body: PromoteBody, user: CurrentUser = Depends(cur
 
 
 @router.get("/{report_id}")
+@require_perm("case.read")
 def get_report(report_id: str, user: CurrentUser = Depends(current_user)):
     report = Report.objects(id=report_id, tenant_id=user.tenant_id).first()
     if not report:
@@ -158,6 +167,7 @@ def get_report(report_id: str, user: CurrentUser = Depends(current_user)):
 
 
 @router.patch("/{report_id}")
+@require_perm("report.draft")
 def edit_report(report_id: str, body: EditReportBody, user: CurrentUser = Depends(current_user)):
     report = Report.objects(id=report_id, tenant_id=user.tenant_id).first()
     if not report:
@@ -213,6 +223,7 @@ def edit_report(report_id: str, body: EditReportBody, user: CurrentUser = Depend
 
 
 @router.post("/{report_id}/sign")
+@require_perm("report.sign")
 def sign_report(report_id: str, body: SignBody, user: CurrentUser = Depends(current_user)):
     """§13663(a)(2). Apply officer e-signature. After this, the Report is immutable."""
     report = Report.objects(id=report_id, tenant_id=user.tenant_id).first()
@@ -229,11 +240,15 @@ def sign_report(report_id: str, body: SignBody, user: CurrentUser = Depends(curr
     if not (report.final_text or "").strip():
         raise HTTPException(422, "Report final_text is empty")
 
+    # F19 — signing identity comes from the authenticated session, NOT the
+    # body. user.display_name is derived from UserContext; the body can only
+    # supply the badge number (recorded next to user_id so the audit log
+    # surfaces any mismatch the agency wants to flag).
     now = datetime.utcnow()
     content_hash = hash_text(report.final_text)
     sig = OfficerSignature(
         user_id=user.user_id,
-        display_name=body.display_name or user.display_name or user.user_id,
+        display_name=user.display_name or user.user_id,
         badge_number=body.badge_number,
         signed_at=now,
         ip_address=user.ip_address,
@@ -250,9 +265,12 @@ def sign_report(report_id: str, body: SignBody, user: CurrentUser = Depends(curr
         user_display=user.display_name, ip_address=user.ip_address,
         event_type=AuditEventType.REPORT_SIGNED,
         case_id=str(report.case.id), report_id=str(report.id),
-        summary=f"Signed report {report.title!r}",
+        summary=f"Signed report {report.title!r} by {user.display_name or user.user_id}",
         detail={
             "content_sha256": content_hash,
+            "authenticated_user_id": user.user_id,
+            "authenticated_display_name": user.display_name,
+            "claimed_badge_number": body.badge_number,
             "ai_programs": [
                 {"name": p.name, "version": p.version, "provider": p.provider}
                 for p in report.ai_programs_used
@@ -263,6 +281,7 @@ def sign_report(report_id: str, body: SignBody, user: CurrentUser = Depends(curr
 
 
 @router.post("/{report_id}/export")
+@require_perm("report.export")
 def export_report(report_id: str, body: ExportBody, user: CurrentUser = Depends(current_user)):
     """Render the signed report to PDF (with §13663(a)(1) disclosure on every
     page) and record the export. The 'evidence.com' target is Phase 2."""
@@ -304,6 +323,7 @@ def export_report(report_id: str, body: ExportBody, user: CurrentUser = Depends(
 
 
 @router.get("/{report_id}/pdf")
+@require_perm("case.read")
 def download_report_pdf(report_id: str, user: CurrentUser = Depends(current_user)):
     """Stream the signed-and-exported PDF. Canonical artifact under business rule #14."""
     from providers.document_storage import get_document_storage_provider
@@ -317,6 +337,7 @@ def download_report_pdf(report_id: str, user: CurrentUser = Depends(current_user
 
 
 @router.get("/{report_id}/chain.pdf")
+@require_perm("case.read")
 def download_chain_pdf(report_id: str, user: CurrentUser = Depends(current_user)):
     """F7 — Chain-of-Custody PDF (§13663(c) audit trail).
 
@@ -342,6 +363,7 @@ def download_chain_pdf(report_id: str, user: CurrentUser = Depends(current_user)
 
 
 @router.get("/{report_id}/diff")
+@require_perm("case.read")
 def get_report_diff(
     report_id: str,
     against_seq: int | None = None,
@@ -359,6 +381,7 @@ def get_report_diff(
 
 
 @router.get("/{report_id}/diff.pdf")
+@require_perm("case.read")
 def download_report_diff_pdf(report_id: str, user: CurrentUser = Depends(current_user)):
     """F9 — Officer's editorial work, as a printable PDF."""
     from fastapi.responses import FileResponse as _FR
@@ -371,6 +394,7 @@ def download_report_diff_pdf(report_id: str, user: CurrentUser = Depends(current
 
 
 @router.get("/cases/{case_id}/reports")
+@require_perm("case.read")
 def list_reports_for_case(case_id: str, user: CurrentUser = Depends(current_user)):
     case = Case.objects(id=case_id, tenant_id=user.tenant_id).first()
     if not case:
