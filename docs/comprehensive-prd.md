@@ -1,7 +1,7 @@
 # Cold Case — Comprehensive PRD
 
-**Version:** 0.6.0 (F10 vendor portal closes §13663(d); F15/F16/F17 compliance reporting; rule #23 added)
-**Status:** Compliance + vendor batch landed
+**Version:** 0.7.0 (F18–F22: pilot-blocking hardening — permission enforcement, authenticated signing, vendor scope enforcement, real document upload, retention sweeper)
+**Status:** Phase 3 hardening in flight
 **Date:** 2026-05-11
 **Sources:**
 - `docs/usecase-transcript.txt` — interview with Detective Gaudi (cold case investigator) + IT sponsor, 2026-05-11
@@ -331,6 +331,59 @@ Explicitly **out of scope** to keep MVP focused (per Dan's stated scope discipli
   - A new audit-summary row on each Case shows "Vendor accesses against this case: N" so a city attorney reviewing the case sees the history at a glance.
 - **Out of scope (Phase 3):** automated approval routing based on purpose × scope; integration with Darwin's internal ticket system; per-operator activity dashboards.
 
+### F18 — Permission enforcement on every endpoint
+
+- **What:** every API route checks the caller holds the permission named in `auth/app_manifest.py`. Default-deny: a route that hasn't declared its permission requirement returns 403. Today permissions are declared but unenforced — `tenant_id` is the only gate, which means any authenticated user in a tenant can do anything.
+- **Why:** §13663(a)(2) signing identity has to be attributable; if every user can sign every report, the attestation is unenforceable. Same for `case.export` (Brady-relevant discovery), `audit.read` (city-attorney access), `vendor_access.approve` (separation of duties with operators).
+- **Mechanism:**
+  - Each router function declares its required permission via a `requires(permission)` dependency or wrapper.
+  - The Launchpad Admin `UserContext` already carries the resolved permission set; the dependency fails the request 403 if the permission isn't in the set, logs a `PERMISSION_DENIED` audit event with `{path, method, permission_required, user_id}`.
+  - Dev-bypass user keeps `admin` role → all permissions; no behavior change in dev.
+  - Two **new** permissions added to the manifest: `vendor_access.request` (Darwin operator role) and `vendor_access.approve` (agency admin only — separation of duties from `case.read` so a sergeant approving a vendor request can't also fulfill it).
+- **Acceptance:** A user with the `viewer` role gets 403 on `POST /reports/{id}/sign`, `POST /cases/{id}/discovery-package`, and `POST /vendor/access-requests/{id}/approve`. The dev user keeps the same behavior as today.
+
+### F19 — Authenticated signing identity (§13663(a)(2) hardening)
+
+- **What:** the officer's signature on a Report derives `user_id`, `display_name`, and `ip_address` from the authenticated `UserContext`, not from the request body. The `badge_number` is the only field the body controls, and it's recorded alongside the user_id so an auditor can verify it.
+- **Why:** today anyone with the session can type "Det. K. Walker" + badge "WALKER-1" into the sign form and produce a §13663(a)(2) attestation that names them. Cross-examination would break this in 30 seconds. Real ESIGN/UETA flows require the signature identity = the authenticated session.
+- **Mechanism:**
+  - `POST /reports/{id}/sign` body shape changes from `{display_name, badge_number, attestation_text}` to `{badge_number, attestation_text?}`. `display_name` is removed; the server uses `user.display_name`.
+  - `OfficerSignature.user_id`, `display_name` always derive from `UserContext`.
+  - Phase 4 will move `badge_number` onto a user-profile record so it doesn't even live in the body; for now we keep it body-supplied but the audit event records `{authenticated_user_id, claimed_badge}` so any mismatch is reviewable.
+- **Acceptance:** Smoke test attempts to sign with a body that names a different officer; server ignores the field and stamps `user.display_name`. Audit event records the resolved values.
+
+### F20 — Vendor access scope enforcement (§13663(d) runtime gate)
+
+- **What:** when a request is made by a Darwin operator with an active `VendorAccessRequest`, every case/report/conversation reference in the path is checked against the request's `scope_kind` and `scope_case_ids` / `scope_report_ids`. Off-scope access returns 403 and emits a `VENDOR_ACCESS_SCOPE_VIOLATION` audit event.
+- **Why:** F10 today *logs* approved access but doesn't *enforce* the declared scope. An operator approved for `case_ids=[X]` can still hit `/cases/Y` because the only check is tenant match. Without runtime enforcement, F10 is theater.
+- **Mechanism:**
+  - New `services/vendor_scope.py::resolve_active_scope(user) -> ActiveScope | None`. Returns the approved+unexpired+unrevoked `VendorAccessRequest` for this operator+tenant, or None (means non-operator or no active access).
+  - New FastAPI dependency `require_vendor_in_scope(case_id_param, report_id_param, ...)` that, when ActiveScope exists, asserts the path's case/report ids fall within scope.
+  - Applied to: cases/* (case_id path param), reports/* (report_id), conversations/* (joined via case), discovery-package/*, audit/cases/*.
+  - For `tenant_wide` scope, the dependency is a no-op (allows everything in the tenant).
+- **Acceptance:** Operator with approved `case_ids=[X]` scope can hit `/cases/X/...` but `/cases/Y/...` returns 403 + audit event. Same operator with `tenant_wide` scope can hit any case.
+
+### F21 — Real document upload (multipart)
+
+- **What:** `POST /cases/{id}/documents/upload` — multipart endpoint that takes a binary file, writes it through the `ArtifactStore`, computes sha256, registers the Document with the resulting storage URI. Replaces today's "Register document" form that only accepts an existing-on-server filename string.
+- **Why:** Detective Gaudi's actual workflow is "I have a patrol-report PDF on my desktop, drag it into Cold Case." Today we can't run a pilot — every demo document has to be pre-seeded server-side.
+- **Mechanism:**
+  - Backend: `POST /cases/{id}/documents/upload` accepts `UploadFile` + optional mime/description. Stream-hashes while writing; rejects > 50 MB by default (configurable via env). Document record's `storage_uri` is the artifact-store key (`uploads/<case-id>/<sha256>__<filename>`), `sha256` is the streamed hash.
+  - Frontend: `<input type="file" accept="application/pdf,image/*">` in the document sidebar; submits as multipart; on success the new document appears in the list with its extraction badge.
+  - File names sanitized: directory traversal characters stripped; final filename safe for sha256-prefixed naming.
+- **Acceptance:** Detective drags a PDF onto the upload UI → file uploads → appears in document list → chat with case sees it via implicit-context rule. No pre-seeding.
+
+### F22 — Retention sweeper
+
+- **What:** scheduled job that purges audit data past its case's effective retention. Respects rule #10 (first-AI-draft retention floor — never purge a `Message` flagged `is_first_ai_draft` while its parent Report is still retained). Writes a `RETENTION_PURGED` audit event with a manifest of what was deleted.
+- **Why:** today `Case.retention_policy` is set on case create but never consulted. PRD §F5 claims §13663(b) retention is enforced; in reality nothing prunes when retention expires.
+- **Mechanism:**
+  - `services/retention_sweeper.py::sweep_case(case)` — for one case, compute the effective retention end date; if past, identify Conversations/Messages/AuditEvents to purge; delete with guard against first-draft Messages whose Report retention is still active.
+  - `services/retention_sweeper.py::sweep_all()` — iterate every Case in every tenant.
+  - `POST /admin/retention-sweep` — manual trigger (gated by `admin.view` permission). Returns a summary `{cases_scanned, conversations_deleted, messages_deleted, audit_events_deleted, first_drafts_preserved}`.
+  - Phase 4: wire a docker-compose cron service or APScheduler to run nightly. For now manual trigger is sufficient for compliance demonstration.
+- **Acceptance:** A case marked `retention_policy=2y` and closed >2y ago has its conversations/messages purged on sweep. A case marked `indefinite` is untouched. A first-AI-draft Message whose Report is still retained is preserved even if the conversation otherwise qualifies for purge.
+
 ## 6. Data model (MVP)
 
 Entities:
@@ -386,7 +439,11 @@ All entities partition by `app_id="coldcase"` (Launchpad Admin Pattern) and by `
 20. **The diff between AI first draft and signed report is the officer's work product.** F9 makes this delta available as a JSON diff and a printable PDF. Under Brady, if the officer deleted exculpatory language the AI surfaced, that change is visible in the diff. The diff itself is not an "official report" — it's an audit artifact, watermarked accordingly. The diff is computed on demand and never cached as a separate artifact (no new persistence surface).
 21. **Discovery-package temp files have a cleanup contract.** Any F8 ZIP assembly that requires temp-disk space writes to a Cold-Case-controlled directory (not system `/tmp`). On successful write to customer storage, the temp file is unlinked synchronously in the same transaction. On upload failure, the temp file is deleted after a 1-hour TTL; manual recovery is permission-gated (`case.export_recovery`) and emits an `AuditEvent`. Signed URLs returned to the requester have a default 1-hour TTL, are never logged in plaintext to external observability systems, and have their `sha256` (not their value) recorded on the `case.discovery_exported` audit event for traceability.
 22. **Adjacent California statutes acknowledged.** Cold Case retention defaults are designed to satisfy the floor set by **Government Code §34090** (records retention for local agencies — generally 2+ years for police records, longer for homicide). Discovery exports (F8) are timed and structured to satisfy **California Evidence Code §1054.1** (formal pre-trial discovery obligations of the prosecution) and to enable prompt **Brady v. Maryland** disclosure of exculpatory material — the F9 editorial-work diff is the primary surface for that latter obligation.
-23. **Vendor access is logged before it happens, not after (§13663(d) enforcement).** Any Darwin operations engineer who needs to access agency data under one of the §13663(d)(iii) carve-out purposes must, *before* accessing, open a `VendorAccessRequest` (F10) with: explicit purpose category, free-text reason detail, scope (case ids or tenant-wide), and a requested expiry. The request remains in `pending` status until an agency admin (typically the city attorney or designated records officer) `approve`s or `denies` it. Each actual data pull during the validity window pings `record-access` to leave a usage timestamp. After `expires_at` or `revoke`, further `record-access` calls hard-fail 403 and the request auto-flips to `expired`. This converts §13663(d) from a contractual promise to a per-request, per-use, per-tenant audit trail the city attorney can subpoena directly.
+23. **Vendor access is logged before it happens, not after (§13663(d) enforcement).** Any Darwin operations engineer who needs to access agency data under one of the §13663(d)(iii) carve-out purposes must, *before* accessing, open a `VendorAccessRequest` (F10) with: explicit purpose category, free-text reason detail, scope (case ids or tenant-wide), and a requested expiry. The request remains in `pending` status until an agency admin (typically the city attorney or designated records officer) `approve`s or `denies` it. Each actual data pull during the validity window pings `record-access` to leave a usage timestamp. After `expires_at` or `revoke`, further `record-access` calls hard-fail 403 and the request auto-flips to `expired`. **F20** adds runtime scope enforcement: every case/report path parameter is checked against the operator's approved scope; off-scope access returns 403 and emits a `VENDOR_ACCESS_SCOPE_VIOLATION` audit event. This converts §13663(d) from a contractual promise to a per-request, per-use, per-tenant audit trail the city attorney can subpoena directly.
+24. **Permission default-deny (F18).** Every API route declares the permission it requires (from `auth/app_manifest.py`). The Launchpad Admin `UserContext` is consulted on every request; absent the named permission, the route returns 403 and emits a `PERMISSION_DENIED` audit event. Routes that haven't declared a requirement are treated as admin-only (`admin.view`) to fail safe. This applies even when `IS_DEV_BYPASS_AUTH_ENABLED=true` — the dev user simply happens to hold the `admin` role.
+25. **Officer signing identity is authenticated, not body-supplied (§13663(a)(2) hardening).** `OfficerSignature.user_id` and `.display_name` are derived from the resolved `UserContext`. The signing endpoint body retains `badge_number` (recorded alongside `user_id` for auditor verification) and an optional `attestation_text` override, but never `display_name`. An attempt to pass `display_name` in the body is ignored and the server-side value is used.
+26. **Document upload writes through the artifact store (F21).** `POST /cases/{id}/documents/upload` is the supported way to add a binary to a case. The upload is stream-hashed, written through `services/artifact_store.put`, and registered as a Document whose `storage_uri` is the artifact-store key. Today the default `LocalArtifactStore` writes to the docker volume; in Phase B the customer-storage adapter routes the bytes to Azure Blob / S3 / SharePoint without changing the call site.
+27. **Retention purge respects the first-draft floor (F22).** A scheduled sweeper iterates every Case, computes the effective retention end date, and purges Conversations / Messages / AuditEvents past that date. The sweeper NEVER deletes a Message whose `is_first_ai_draft=true` if the parent Report's retention is still active (rule #10). Each sweep emits a `RETENTION_PURGED` audit event listing what was deleted; the event itself is exempt from the next sweep.
 
 ## 8. Provider architecture
 
@@ -484,6 +541,7 @@ Status legend: ✅ = automated smoke test passes locally; ⏳ = not yet covered.
 
 | Version | Date | Changes |
 |---|---|---|
+| 0.7.0 | 2026-05-11 | Phase 3 pilot-blocking hardening identified during workflow review. **F18** — permission enforcement on every endpoint (Launchpad Admin `requires_permission` dependency; default-deny; PERMISSION_DENIED audit event; two new perms `vendor_access.request` + `vendor_access.approve`). **F19** — `OfficerSignature.display_name`/`user_id` derived from authenticated UserContext, not request body (§13663(a)(2) hardening; ESIGN/UETA alignment). **F20** — vendor scope enforcement at runtime (operator with approved scope=case_ids hits off-scope case → 403 + VENDOR_ACCESS_SCOPE_VIOLATION event). **F21** — real multipart document upload through ArtifactStore. **F22** — retention sweeper with first-draft floor preservation. Business rules #24–#27. PRD review focused on pilot-readiness, not statutory coverage |
 | 0.6.0 | 2026-05-11 | F10 Vendor Access Portal closes the only conspicuous §13663(d) gap from the v0.5.0 reviewer pass — new `VendorAccessRequest` model + request/approve/deny/revoke/record-access endpoints + 5 audit-event types + admin route. F15 Per-Case Audit Manifest PDF for case-level rollup (sibling to F7 chain PDFs). F16 AI Program Inventory for SB-524 annual attestation. F17 Refusal & Anomaly Report surfaces refusal_detected + vendor.access events. Business rule #23 added (vendor-access lifecycle). §12 (d) row upgraded from "Phase 2 idea" to shipped |
 | 0.5.0 | 2026-05-11 | F7 (chain-of-custody PDF auto-paired on export, with media inventory + refusal flags + citation-coverage stats + audit-integrity hash), F8 (discovery-package ZIP with self-signing manifest, signed-URL handoff to customer storage, role-gated "Export for discovery" UI), F9 (officer's-editorial-work diff with neutral color treatment and Brady-aware framing). Business rules #17 clarified (audit-artifact carve-out), #21 added (temp-file cleanup), #22 added (adjacent CA statutes acknowledged). §13 reorganized into out-of-scope vs Phase 2 (F10 vendor portal, F11 playground, F12 second-opinion, F13 semantic diff classifier, F14 inline penal-code lookup, log scrubbing). PRD reviewed by three subagents (statutory completeness, data-residency/threat-model, detective UX) before lock |
 | 0.4.0 | 2026-05-11 | Backend MVP landed: domain models, LLM + DocumentStorage provider seams, F1/F2/F3/F4 routers, §13663-compliant PDF export. End-to-end smoke (17 steps incl. 9 statute-driven checks) green |
