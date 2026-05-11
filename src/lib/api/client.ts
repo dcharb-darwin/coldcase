@@ -9,7 +9,7 @@
 import axios, { AxiosError, type AxiosInstance } from "axios";
 import { impersonation } from "../../launchpad-admin";
 
-const API_BASE_URL = "/launchpad/coldcase/api";
+export const API_BASE_URL = "/launchpad/coldcase/api";
 
 const http: AxiosInstance = axios.create({
   baseURL: API_BASE_URL,

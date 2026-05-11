@@ -20,7 +20,10 @@ from pydantic import BaseModel, Field
 from lib.hash import hash_text
 from models import Case, Conversation, Message, MessageRole
 from models.audit_event import AuditEventType
-from models.report import Report, ReportStatus, AIProgram, OfficerSignature, ReportRevision
+from models.report import (
+    AIProgram, AI_EDITOR_ID, OfficerSignature, Report, ReportRevision, ReportStatus,
+    REVISION_NOTE_AI_FIRST_DRAFT, REVISION_NOTE_INITIAL_OVERRIDE, REVISION_NOTE_OFFICER_EDIT,
+)
 from routers._deps import CurrentUser, current_user
 from services import case_audit
 from services.report_export import export_report_pdf
@@ -91,12 +94,12 @@ def promote_message_to_report(body: PromoteBody, user: CurrentUser = Depends(cur
     initial_revision = ReportRevision(
         seq=0,
         text=msg.content,
-        editor_id="ai",
-        editor_display=f"{msg.provider}:{msg.model}" if msg.provider else "ai",
+        editor_id=AI_EDITOR_ID,
+        editor_display=f"{msg.provider}:{msg.model}" if msg.provider else AI_EDITOR_ID,
         timestamp=now,
         content_sha256=hash_text(msg.content),
         byte_count=len(msg.content.encode("utf-8")),
-        note="AI first draft (verbatim — §13663(b))",
+        note=REVISION_NOTE_AI_FIRST_DRAFT,
     )
     revisions = [initial_revision]
     if final_text != msg.content:
@@ -108,7 +111,7 @@ def promote_message_to_report(body: PromoteBody, user: CurrentUser = Depends(cur
             timestamp=now,
             content_sha256=hash_text(final_text),
             byte_count=len(final_text.encode("utf-8")),
-            note="initial officer override at promote-time",
+            note=REVISION_NOTE_INITIAL_OVERRIDE,
         ))
 
     report = Report(
@@ -174,7 +177,7 @@ def edit_report(report_id: str, body: EditReportBody, user: CurrentUser = Depend
             timestamp=datetime.utcnow(),
             content_sha256=hash_text(body.final_text),
             byte_count=len(body.final_text.encode("utf-8")),
-            note="officer edit",
+            note=REVISION_NOTE_OFFICER_EDIT,
         ))
 
     if body.additional_ai_programs:
@@ -294,24 +297,15 @@ def export_report(report_id: str, body: ExportBody, user: CurrentUser = Depends(
 
 @router.get("/{report_id}/pdf")
 def download_report_pdf(report_id: str, user: CurrentUser = Depends(current_user)):
-    """Stream the signed-and-exported PDF. The canonical artifact under
-    business rule #14 — retained as long as the Report retention holds."""
-    import os
+    """Stream the signed-and-exported PDF. Canonical artifact under business rule #14."""
+    from providers.document_storage import get_document_storage_provider
     report = Report.objects(id=report_id, tenant_id=user.tenant_id).first()
     if not report:
         raise HTTPException(404, "Report not found")
     if not report.exported_artifact_uri:
         raise HTTPException(409, "Report has not been exported yet")
-    path = report.exported_artifact_uri.replace("file://", "")
-    if not os.path.isabs(path):
-        path = os.path.join(os.environ.get("UPLOAD_DIRECTORY", "./uploads"), path)
-    if not os.path.exists(path):
-        raise HTTPException(404, f"Artifact missing on disk at {path}")
-    return FileResponse(
-        path,
-        media_type="application/pdf",
-        filename=f"{report.title or report.id}.pdf",
-    )
+    path = get_document_storage_provider().resolve_path(report.exported_artifact_uri)
+    return FileResponse(path, media_type="application/pdf", filename=f"{report.title or report.id}.pdf")
 
 
 @router.get("/cases/{case_id}/reports")

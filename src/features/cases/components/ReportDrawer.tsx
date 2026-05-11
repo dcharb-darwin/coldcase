@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   editReport,
@@ -12,10 +12,6 @@ import {
 } from "@/lib/api/coldcase";
 import { caseKeys, reportKeys } from "../queryKeys";
 import CitationText, { extractCitations } from "./CitationText";
-
-function extractCitationCount(text: string): number {
-  return extractCitations(text).length;
-}
 
 type DrawerState =
   | { kind: "closed" }
@@ -200,6 +196,7 @@ function ReportEditor({
 
   const isDraft = report.status === "draft";
   const isSigned = report.status === "signed" || report.status === "exported";
+  const citationCount = useMemo(() => extractCitations(finalText).length, [finalText]);
 
   return (
     <div className="p-6">
@@ -247,7 +244,7 @@ function ReportEditor({
           </span>
           {isDraft ? (
             <span className="text-[11px] text-slate-500">
-              {finalText.length} chars · {extractCitationCount(finalText)} citations
+              {finalText.length} chars · {citationCount} citations
             </span>
           ) : null}
         </div>

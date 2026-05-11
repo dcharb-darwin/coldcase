@@ -35,6 +35,17 @@ class AIProgram(EmbeddedDocument):
     provider = StringField(default="")       # e.g. "Microsoft 365 Copilot (GCC)"
 
 
+# Sentinel `editor_id` value for system-generated revisions (the AI first draft).
+# Officer revisions carry the user's real id, not this constant.
+AI_EDITOR_ID = "ai"
+
+# Canonical revision-note strings. Kept as module constants (rather than an Enum)
+# because they're stored verbatim on the embedded doc and surfaced to the UI.
+REVISION_NOTE_AI_FIRST_DRAFT = "AI first draft (verbatim — §13663(b))"
+REVISION_NOTE_INITIAL_OVERRIDE = "initial officer override at promote-time"
+REVISION_NOTE_OFFICER_EDIT = "officer edit"
+
+
 class ReportRevision(EmbeddedDocument):
     """Append-only revision snapshot. Created on every PATCH and on initial
     promote. The first revision (`seq=0`) is the verbatim AI first draft."""
@@ -45,7 +56,20 @@ class ReportRevision(EmbeddedDocument):
     timestamp = DateTimeField(required=True)
     content_sha256 = StringField(required=True)
     byte_count = IntField(default=0)
-    note = StringField(default="")  # optional human note, e.g. "promoted from AI" / "officer edit"
+    note = StringField(default="")
+
+    def to_dict(self, *, is_signed_revision: bool = False) -> dict:
+        return {
+            "seq": self.seq,
+            "text": self.text,
+            "editor_id": self.editor_id,
+            "editor_display": self.editor_display,
+            "timestamp": self.timestamp.isoformat() if self.timestamp else None,
+            "content_sha256": self.content_sha256,
+            "byte_count": self.byte_count,
+            "note": self.note,
+            "is_signed_revision": is_signed_revision,
+        }
 
 
 class OfficerSignature(EmbeddedDocument):
@@ -142,20 +166,9 @@ class Report(MEDocument):
                 if self.signature else None
             ),
             "revisions": [
-                {
-                    "seq": r.seq,
-                    "text": r.text,
-                    "editor_id": r.editor_id,
-                    "editor_display": r.editor_display,
-                    "timestamp": r.timestamp.isoformat() if r.timestamp else None,
-                    "content_sha256": r.content_sha256,
-                    "byte_count": r.byte_count,
-                    "note": r.note,
-                    "is_signed_revision": (
-                        bool(self.signature)
-                        and self.signature.content_sha256 == r.content_sha256
-                    ),
-                }
+                r.to_dict(
+                    is_signed_revision=bool(self.signature) and self.signature.content_sha256 == r.content_sha256
+                )
                 for r in (self.revisions or [])
             ],
             "exported_artifact_uri": self.exported_artifact_uri,

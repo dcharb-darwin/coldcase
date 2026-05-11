@@ -7,7 +7,7 @@
  * resulting error messages via the existing axios interceptor.
  */
 
-import { http } from "./client";
+import { API_BASE_URL, http } from "./client";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -306,8 +306,8 @@ export async function exportReport(id: string, target: "file" | "evidence.com" =
 }
 
 export function reportPdfUrl(id: string): string {
-  // Vite proxies /launchpad/* to the backend, so this is browser-loadable directly.
-  return `/launchpad/coldcase/api/reports/${id}/pdf`;
+  // Browser-loadable via the Vite /launchpad/* proxy → backend.
+  return `${API_BASE_URL}/reports/${id}/pdf`;
 }
 
 // ── Audit ──────────────────────────────────────────────────────────────────
