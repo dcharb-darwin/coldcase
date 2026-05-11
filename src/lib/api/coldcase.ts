@@ -339,6 +339,26 @@ export async function signReport(id: string, body: {
   return data;
 }
 
+export interface ReviseProposal {
+  proposed_text: string;
+  applies_to: "selection" | "whole_draft";
+  model: string;
+  provider: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+}
+
+export async function reviseReport(
+  id: string,
+  body: { instruction: string; selected_text?: string },
+): Promise<ReviseProposal> {
+  const { data } = await http.post<ReviseProposal>(`/reports/${id}/revise`, body, {
+    // LLM round-trip can be slow on local models.
+    timeout: 180000,
+  });
+  return data;
+}
+
 export async function exportReport(id: string, target: "file" | "evidence.com" = "file"): Promise<Report> {
   const { data } = await http.post<Report>(`/reports/${id}/export`, { target });
   return data;

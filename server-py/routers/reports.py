@@ -71,6 +71,15 @@ class ExportBody(BaseModel):
     target: str = "file"  # "file" | "evidence.com" (latter is Phase 2)
 
 
+class ReviseBody(BaseModel):
+    """Ask the LLM to propose a revised draft. The response is returned to
+    the client without persisting — the officer reviews + accepts via the
+    regular edit endpoint, which is what creates the audit-logged revision.
+    The §13663 chain stays intact: this endpoint just produces a proposal."""
+    instruction: str = Field(min_length=1, max_length=2000)
+    selected_text: Optional[str] = None  # if present, AI is asked to rewrite just this span
+
+
 # ── Endpoints ───────────────────────────────────────────────────────────────
 
 
@@ -220,6 +229,99 @@ def edit_report(report_id: str, body: EditReportBody, user: CurrentUser = Depend
             },
         )
     return report.to_dict()
+
+
+@router.post("/{report_id}/revise")
+@require_perm("report.draft")
+def revise_report(report_id: str, body: ReviseBody, user: CurrentUser = Depends(current_user)):
+    """Ask the LLM to propose a revised version of the draft (whole text or
+    a selected span). The response is NOT persisted — the officer reviews
+    the proposal in the UI, edits if needed, and accepts via PATCH to log
+    a normal revision. The §13663(b) first draft is never touched.
+
+    Records an AI program against the report so the §13663(a)(1) disclosure
+    reflects every model that contributed."""
+    from models import Document
+    from providers.llm import get_llm_provider
+
+    report = Report.objects(id=report_id, tenant_id=user.tenant_id).first()
+    if not report:
+        raise HTTPException(404, "Report not found")
+    if report.status != ReportStatus.DRAFT.value:
+        raise HTTPException(409, f"Cannot revise a report in status {report.status!r}")
+
+    docs = list(Document.objects(case=report.case))
+    doc_summary = (
+        "\n".join(f"- {d.original_filename}" for d in docs)
+        or "(no documents on case)"
+    )
+
+    if body.selected_text:
+        scope = (
+            "The officer selected the following span of the draft and wants "
+            "you to rewrite ONLY that span according to the instruction. "
+            "Return only the replacement text for the selected span — no "
+            "preamble, no quotes around it.\n\n"
+            f"=== SELECTED SPAN ===\n{body.selected_text}\n=== END SELECTED ===\n"
+        )
+    else:
+        scope = (
+            "Return a complete revised draft. Preserve every citation token "
+            "of the form [src: filename, L<n>] or [src: filename, p<page>, "
+            "\"quote\"] from the original draft unless the officer's "
+            "instruction explicitly asks to change them. Return only the "
+            "revised draft text — no preamble."
+        )
+
+    system = (
+        "You are revising a draft police report on behalf of a detective. "
+        "This is a §13663(b) editing pass, not the first AI draft. "
+        "Only state facts present in the case documents listed below or in "
+        "the existing draft. Do not invent witnesses, times, or quotes.\n\n"
+        f"=== CASE DOCUMENTS ===\n{doc_summary}\n\n"
+        f"=== CURRENT DRAFT (revision {len(report.revisions or []) - 1}) ===\n"
+        f"{report.final_text}\n=== END CURRENT DRAFT ===\n\n"
+        f"{scope}"
+    )
+    user_prompt = body.instruction
+
+    llm = get_llm_provider()
+    response = llm.chat(system=system, user=user_prompt)
+
+    # Record this model as having contributed so the §13663(a)(1) disclosure
+    # is honest — even if the officer ends up rejecting the proposal.
+    key = (response.provider or "unknown-provider", response.model or "")
+    existing = {(p.name, p.version) for p in (report.ai_programs_used or [])}
+    if key not in existing:
+        report.ai_programs_used.append(AIProgram(
+            name=response.provider or "unknown-provider",
+            version=response.model or "",
+            provider=response.provider or "",
+        ))
+        report.save()
+
+    case_audit.log_user_event(
+        user,
+        event_type=AuditEventType.MESSAGE_ASSISTANT,
+        case_id=str(report.case.id), report_id=str(report.id),
+        summary=f"AI revise proposal ({response.completion_tokens} tokens)",
+        detail={
+            "instruction": body.instruction[:300],
+            "has_selection": bool(body.selected_text),
+            "model": response.model,
+            "provider": response.provider,
+            "purpose": "report_revise_proposal",
+        },
+    )
+
+    return {
+        "proposed_text": response.content,
+        "applies_to": "selection" if body.selected_text else "whole_draft",
+        "model": response.model,
+        "provider": response.provider,
+        "prompt_tokens": response.prompt_tokens,
+        "completion_tokens": response.completion_tokens,
+    }
 
 
 @router.post("/{report_id}/sign")

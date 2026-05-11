@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  discoveryPackageDownloadUrl,
   editReport,
+  exportDiscoveryPackage,
   exportReport,
   getReport,
   getReportDiff,
@@ -9,9 +11,12 @@ import {
   reportChainPdfUrl,
   reportDiffPdfUrl,
   reportPdfUrl,
+  reviseReport,
   signReport,
   type Message,
   type Report,
+  type ReportRevision,
+  type ReviseProposal,
 } from "@/lib/api/coldcase";
 import { caseKeys, reportKeys } from "../queryKeys";
 import CitationText, { extractCitations } from "./CitationText";
@@ -33,7 +38,7 @@ export default function ReportDrawer({ caseId, state, onClose, onCitationClick }
   return (
     <div className="fixed inset-0 z-40 flex justify-end bg-black/30" onClick={onClose}>
       <div
-        className="bg-white w-full max-w-3xl h-full overflow-y-auto shadow-2xl"
+        className="bg-slate-50 w-full max-w-[1280px] h-full overflow-hidden shadow-2xl flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
         {state.kind === "promote" ? (
@@ -44,7 +49,7 @@ export default function ReportDrawer({ caseId, state, onClose, onCitationClick }
             onCitationClick={onCitationClick}
           />
         ) : (
-          <ReportEditor
+          <ReportWorkspace
             caseId={caseId}
             reportId={state.reportId}
             onClose={onClose}
@@ -55,6 +60,8 @@ export default function ReportDrawer({ caseId, state, onClose, onCitationClick }
     </div>
   );
 }
+
+// ── Promote (unchanged behaviorally) ────────────────────────────────────────
 
 function PromoteForm({
   caseId,
@@ -81,7 +88,7 @@ function PromoteForm({
   });
 
   return (
-    <div className="p-6">
+    <div className="p-6 bg-white h-full overflow-y-auto">
       <header className="flex items-start justify-between mb-4">
         <div>
           <h2 className="text-lg font-semibold">Promote AI output to an official report</h2>
@@ -135,7 +142,18 @@ function PromoteForm({
   );
 }
 
-function ReportEditor({
+// ── Report workspace ────────────────────────────────────────────────────────
+
+type Phase = "review" | "refine" | "deliver";
+
+function phaseForStatus(status: Report["status"]): Phase {
+  if (status === "draft") return "refine";
+  if (status === "signed") return "deliver";
+  if (status === "exported") return "deliver";
+  return "review";
+}
+
+function ReportWorkspace({
   caseId,
   reportId,
   onClose,
@@ -151,18 +169,21 @@ function ReportEditor({
     queryKey: reportKeys.detail(reportId),
     queryFn: () => getReport(reportId),
   });
+
   const [finalText, setFinalText] = useState("");
   const [title, setTitle] = useState("");
-  const [displayName, setDisplayName] = useState("");
   const [badge, setBadge] = useState("");
+  const [proposal, setProposal] = useState<ReviseProposal | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     if (report) {
       setFinalText(report.final_text);
       setTitle(report.title);
-      setDisplayName(report.signature?.display_name ?? "");
       setBadge(report.signature?.badge_number ?? "");
+      setProposal(null);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [report?.id]);
 
   const editMut = useMutation({
@@ -177,7 +198,9 @@ function ReportEditor({
     mutationFn: async () => {
       // Save edits first, then sign. F19: signer identity comes from the
       // authenticated session server-side; only badge is sent in the body.
-      await editReport(reportId, { title, final_text: finalText });
+      if (finalText !== report?.final_text || title !== report?.title) {
+        await editReport(reportId, { title, final_text: finalText });
+      }
       return signReport(reportId, { badge_number: badge });
     },
     onSuccess: () => {
@@ -194,10 +217,6 @@ function ReportEditor({
     },
   });
 
-  // ALL hooks must run on every render, before any conditional return —
-  // moving useMemo below the `if (!report)` early-return below would violate
-  // the Rules of Hooks and React panics with "Rendered more hooks than
-  // during the previous render."
   const citationCount = useMemo(() => extractCitations(finalText).length, [finalText]);
 
   if (!report) {
@@ -206,37 +225,223 @@ function ReportEditor({
 
   const isDraft = report.status === "draft";
   const isSigned = report.status === "signed" || report.status === "exported";
+  const phase = phaseForStatus(report.status);
+  const dirty = isDraft && (finalText !== report.final_text || title !== report.title);
+
+  const acceptProposal = (text: string) => {
+    if (proposal?.applies_to === "selection" && textareaRef.current) {
+      const el = textareaRef.current;
+      const start = el.selectionStart ?? 0;
+      const end = el.selectionEnd ?? finalText.length;
+      setFinalText(finalText.slice(0, start) + text + finalText.slice(end));
+    } else {
+      setFinalText(text);
+    }
+    setProposal(null);
+  };
 
   return (
-    <div className="p-6">
-      <header className="flex items-start justify-between mb-4">
-        <div>
-          <h2 className="text-lg font-semibold">
-            {report.status === "draft" ? "Draft report" : "Official report"}
-          </h2>
-          <div className="text-xs text-slate-500 mt-1 flex items-center gap-2">
-            <StatusBadge status={report.status} /> · ID <code className="text-[10px]">{report.id.slice(-8)}</code>
-          </div>
-        </div>
-        <button type="button" onClick={onClose} className="text-slate-400 text-2xl leading-none px-2">
-          ×
-        </button>
-      </header>
+    <div className="flex flex-col h-full">
+      <WorkspaceHeader report={report} phase={phase} dirty={dirty} onClose={onClose} />
 
-      {/* §13663(a)(1) banner */}
-      <div className="rounded border border-amber-200 bg-amber-50 p-3 text-xs mb-4">
-        <div className="font-semibold text-amber-900">AI Disclosure (Cal. Penal Code §13663(a)(1))</div>
-        <div className="mt-1 text-amber-900/90">{report.statutory_disclosure}</div>
-        {report.ai_programs_used.length > 0 ? (
-          <div className="mt-1 text-amber-900/80">
-            AI program(s): {report.ai_programs_used.map((p) => `${p.name} ${p.version || ""}`.trim()).join("; ")}
-          </div>
-        ) : null}
+      <div className="flex-1 overflow-hidden grid grid-cols-12 gap-0 bg-slate-100">
+        {/* Left: AI first draft + revision timeline */}
+        <aside className="col-span-3 border-r border-slate-200 bg-white overflow-y-auto">
+          <FirstDraftPanel report={report} onCitationClick={onCitationClick} />
+          <RevisionTimeline revisions={report.revisions || []} onCitationClick={onCitationClick} />
+        </aside>
+
+        {/* Center: editable body + AI revise */}
+        <main className="col-span-6 overflow-y-auto bg-white">
+          <RefinePanel
+            report={report}
+            title={title}
+            setTitle={setTitle}
+            finalText={finalText}
+            setFinalText={setFinalText}
+            textareaRef={textareaRef}
+            isDraft={isDraft}
+            citationCount={citationCount}
+            onCitationClick={onCitationClick}
+            proposal={proposal}
+            setProposal={setProposal}
+            onAcceptProposal={acceptProposal}
+          />
+        </main>
+
+        {/* Right: §13663 disclosure + sign + deliver */}
+        <aside className="col-span-3 border-l border-slate-200 bg-white overflow-y-auto">
+          <DisclosurePanel report={report} />
+          {isDraft ? (
+            <SignaturePanel
+              badge={badge}
+              setBadge={setBadge}
+              onSign={() => signMut.mutate()}
+              onSaveDraft={() => editMut.mutate()}
+              signPending={signMut.isPending}
+              savePending={editMut.isPending}
+              dirty={dirty}
+              error={(signMut.error || editMut.error) as Error | null}
+            />
+          ) : (
+            <SignedPanel report={report} />
+          )}
+          {isSigned ? (
+            <DeliverPanel
+              caseId={caseId}
+              report={report}
+              onExport={() => exportMut.mutate()}
+              exportPending={exportMut.isPending}
+              error={exportMut.error as Error | null}
+            />
+          ) : null}
+        </aside>
       </div>
+    </div>
+  );
+}
 
-      {/* Title */}
-      <label className="block mb-3">
-        <span className="text-sm text-slate-600">Title</span>
+// ── Header w/ phase indicator ───────────────────────────────────────────────
+
+function WorkspaceHeader({
+  report, phase, dirty, onClose,
+}: { report: Report; phase: Phase; dirty: boolean; onClose: () => void }) {
+  return (
+    <header className="bg-white border-b border-slate-200 px-6 py-3 flex items-center gap-4">
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2">
+          <h2 className="text-base font-semibold truncate">📋 {report.title}</h2>
+          <StatusBadge status={report.status} />
+          {dirty ? <span className="text-[11px] text-amber-700">• unsaved changes</span> : null}
+        </div>
+        <div className="text-[11px] text-slate-500 mt-0.5">
+          Report ID <code>{report.id.slice(-8)}</code>
+          {report.signed_at ? <> · signed {new Date(report.signed_at).toLocaleString()}</> : null}
+        </div>
+      </div>
+      <PhaseStepper phase={phase} />
+      <button type="button" onClick={onClose} className="text-slate-400 text-2xl leading-none px-2">×</button>
+    </header>
+  );
+}
+
+function PhaseStepper({ phase }: { phase: Phase }) {
+  const steps: { id: Phase; label: string }[] = [
+    { id: "review", label: "1. Review" },
+    { id: "refine", label: "2. Refine" },
+    { id: "deliver", label: "3. Deliver" },
+  ];
+  const order = { review: 0, refine: 1, deliver: 2 };
+  return (
+    <ol className="flex items-center gap-1 text-xs">
+      {steps.map((s) => {
+        const state = order[s.id] < order[phase] ? "done" : order[s.id] === order[phase] ? "current" : "todo";
+        const cls =
+          state === "current" ? "bg-blue-600 text-white" :
+          state === "done" ? "bg-emerald-100 text-emerald-800" :
+          "bg-slate-100 text-slate-500";
+        return <li key={s.id} className={`px-2 py-1 rounded ${cls}`}>{s.label}</li>;
+      })}
+    </ol>
+  );
+}
+
+// ── Left pane: first draft + timeline ───────────────────────────────────────
+
+function FirstDraftPanel({
+  report, onCitationClick,
+}: { report: Report; onCitationClick: (f: string, l: number) => void }) {
+  return (
+    <section className="p-4 border-b border-slate-200">
+      <div className="text-[11px] uppercase tracking-wide font-semibold text-amber-900 mb-1">
+        §13663(b) First AI draft
+      </div>
+      <div className="text-[11px] text-slate-500 mb-2 italic">
+        Not an officer statement. Preserved for the life of the report.
+      </div>
+      <div className="rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs max-h-64 overflow-y-auto">
+        <CitationText
+          text={report.first_ai_draft_text_snapshot}
+          onCitationClick={onCitationClick}
+        />
+      </div>
+    </section>
+  );
+}
+
+function RevisionTimeline({
+  revisions, onCitationClick,
+}: { revisions: ReportRevision[]; onCitationClick: (f: string, l: number) => void }) {
+  const [openSeq, setOpenSeq] = useState<number | null>(null);
+  return (
+    <section className="p-4">
+      <div className="text-[11px] uppercase tracking-wide font-semibold text-slate-700 mb-2">
+        Revisions ({revisions.length})
+      </div>
+      <ol className="space-y-1.5">
+        {revisions.map((r) => {
+          const isOpen = openSeq === r.seq;
+          return (
+            <li
+              key={r.seq}
+              className={`border rounded text-xs ${
+                r.is_signed_revision ? "border-emerald-300 bg-emerald-50" : "border-slate-200 bg-white"
+              }`}
+            >
+              <button
+                type="button"
+                onClick={() => setOpenSeq(isOpen ? null : r.seq)}
+                className="w-full text-left px-2 py-1.5"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold truncate">
+                    Rev {r.seq} · {r.editor_display || r.editor_id}
+                  </span>
+                  {r.is_signed_revision ? (
+                    <span className="px-1 py-0.5 rounded bg-emerald-200 text-emerald-900 text-[9px]">✓ SIGNED</span>
+                  ) : null}
+                </div>
+                <div className="text-[10px] text-slate-500 mt-0.5">
+                  {r.timestamp ? new Date(r.timestamp).toLocaleString() : ""} · {r.byte_count} B
+                </div>
+                {r.note ? <div className="text-[10px] text-slate-600 italic">{r.note}</div> : null}
+              </button>
+              {isOpen ? (
+                <div className="border-t border-slate-200 px-2 py-1.5 max-h-48 overflow-y-auto bg-slate-50">
+                  <CitationText text={r.text} onCitationClick={onCitationClick} />
+                </div>
+              ) : null}
+            </li>
+          );
+        })}
+      </ol>
+    </section>
+  );
+}
+
+// ── Center pane: refine ─────────────────────────────────────────────────────
+
+function RefinePanel({
+  report, title, setTitle, finalText, setFinalText, textareaRef, isDraft,
+  citationCount, onCitationClick, proposal, setProposal, onAcceptProposal,
+}: {
+  report: Report;
+  title: string;
+  setTitle: (s: string) => void;
+  finalText: string;
+  setFinalText: (s: string) => void;
+  textareaRef: React.RefObject<HTMLTextAreaElement | null>;
+  isDraft: boolean;
+  citationCount: number;
+  onCitationClick: (f: string, l: number) => void;
+  proposal: ReviseProposal | null;
+  setProposal: (p: ReviseProposal | null) => void;
+  onAcceptProposal: (text: string) => void;
+}) {
+  return (
+    <div className="p-6 space-y-4">
+      <label className="block">
+        <span className="text-xs uppercase tracking-wide font-semibold text-slate-700">Title</span>
         <input
           className="mt-1 w-full border border-slate-300 rounded px-2 py-1.5 text-sm disabled:bg-slate-100"
           value={title}
@@ -245,11 +450,10 @@ function ReportEditor({
         />
       </label>
 
-      {/* Final text — editor + live preview */}
-      <div className="mb-3">
-        <div className="flex items-baseline justify-between">
-          <span className="text-sm text-slate-600">
-            Report body {isDraft ? "(editable — sign locks this)" : "(locked)"}
+      <div>
+        <div className="flex items-baseline justify-between mb-1">
+          <span className="text-xs uppercase tracking-wide font-semibold text-slate-700">
+            Report body {isDraft ? "" : "(locked)"}
           </span>
           {isDraft ? (
             <span className="text-[11px] text-slate-500">
@@ -259,235 +463,225 @@ function ReportEditor({
         </div>
         {isDraft ? (
           <textarea
-            className="mt-1 w-full border border-slate-300 rounded px-2 py-1.5 text-sm font-mono"
-            rows={12}
+            ref={textareaRef}
+            className="w-full border border-slate-300 rounded px-3 py-2 text-sm font-mono leading-relaxed"
+            rows={18}
             value={finalText}
             onChange={(e) => setFinalText(e.target.value)}
+            placeholder="Edit the draft here. Use the AI Revise toolbar below to ask for changes."
           />
         ) : null}
+      </div>
 
-        {/* Live preview: clickable citations against the current draft text. */}
-        <div className="mt-2">
-          <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-1">
-            {isDraft
-              ? "Live preview — click any citation to verify the source before signing"
-              : "Signed text"}
-          </div>
-          <div className="border border-slate-300 rounded px-3 py-2 text-sm bg-slate-50 max-h-72 overflow-y-auto">
-            <CitationText text={finalText} onCitationClick={onCitationClick} />
-          </div>
+      {isDraft ? (
+        <ReviseToolbar
+          reportId={report.id}
+          textareaRef={textareaRef}
+          finalText={finalText}
+          proposal={proposal}
+          setProposal={setProposal}
+          onAccept={onAcceptProposal}
+          onCitationClick={onCitationClick}
+        />
+      ) : null}
+
+      <div>
+        <div className="text-xs uppercase tracking-wide font-semibold text-slate-700 mb-1">
+          {isDraft ? "Live preview" : "Signed text"}
+        </div>
+        <div className="border border-slate-300 rounded px-3 py-2 text-sm bg-slate-50 max-h-72 overflow-y-auto">
+          <CitationText text={finalText} onCitationClick={onCitationClick} />
         </div>
       </div>
 
-      {/* First AI draft (always shown, read-only) */}
-      <details className="mb-3 rounded border border-slate-200 bg-slate-50 p-3 text-xs">
-        <summary className="cursor-pointer font-semibold text-slate-700">
-          §13663(b) first AI draft — not an officer statement
-        </summary>
-        <div className="mt-2 text-slate-700 max-h-72 overflow-y-auto">
-          <CitationText
-            text={report.first_ai_draft_text_snapshot}
-            onCitationClick={onCitationClick}
-          />
-        </div>
-      </details>
+      {/* Officer's editorial work — visible (not collapsed) so the diff is obvious */}
+      <EditorialWorkPanel report={report} />
+    </div>
+  );
+}
 
-      {/* Revision history (business rule #13) */}
-      <details className="mb-4 rounded border border-slate-200 bg-slate-50 p-3 text-xs">
-        <summary className="cursor-pointer font-semibold text-slate-700">
-          Revision history ({report.revisions.length})
-        </summary>
-        <ol className="mt-2 space-y-2">
-          {report.revisions.map((r) => (
-            <li
-              key={r.seq}
-              className={`border rounded p-2 ${
-                r.is_signed_revision
-                  ? "border-emerald-300 bg-emerald-50"
-                  : "border-slate-200 bg-white"
-              }`}
-            >
-              <div className="flex items-center justify-between">
-                <span className="font-semibold">
-                  Rev {r.seq} · {r.editor_display || r.editor_id}
-                  {r.is_signed_revision ? (
-                    <span className="ml-2 px-1.5 py-0.5 rounded bg-emerald-200 text-emerald-900 text-[10px]">
-                      ✓ SIGNED
-                    </span>
-                  ) : null}
-                </span>
-                <span className="text-slate-500 text-[10px]">
-                  {r.timestamp ? new Date(r.timestamp).toLocaleString() : ""} · {r.byte_count} B
-                </span>
-              </div>
-              <div className="text-[10px] text-slate-500 font-mono mt-0.5">
-                sha256: {r.content_sha256.slice(0, 24)}…
-              </div>
-              {r.note ? <div className="text-[11px] text-slate-600 italic mt-0.5">{r.note}</div> : null}
-              <details className="mt-1">
-                <summary className="cursor-pointer text-[11px] text-blue-700">show text</summary>
-                <div className="mt-1 max-h-48 overflow-y-auto bg-slate-50 border border-slate-200 rounded px-2 py-1">
-                  <CitationText text={r.text} onCitationClick={onCitationClick} />
-                </div>
-              </details>
-            </li>
-          ))}
-        </ol>
-      </details>
+const QUICK_INSTRUCTIONS: { label: string; instruction: string; needsSelection?: boolean }[] = [
+  { label: "Tighten", instruction: "Tighten this paragraph. Remove hedging. Keep every fact and every citation token.", needsSelection: true },
+  { label: "Plain language", instruction: "Rewrite in plain language a jury could follow. Keep every citation token.", needsSelection: true },
+  { label: "Add timeline", instruction: "Add a chronological timeline section near the top, in `YYYY-MM-DD HH:MM — event (source)` format, drawn only from the existing draft and the case documents." },
+  { label: "Flag gaps", instruction: "List gaps and ambiguities a defense attorney could exploit. Append them at the end of the draft under a `## Known gaps` heading. Do not invent facts." },
+];
 
-      {/* F9 — Officer's Editorial Work (diff between AI first draft and signed text) */}
-      <EditorialWorkAccordion report={report} onCitationClick={onCitationClick} />
+function ReviseToolbar({
+  reportId, textareaRef, finalText, proposal, setProposal, onAccept, onCitationClick,
+}: {
+  reportId: string;
+  textareaRef: React.RefObject<HTMLTextAreaElement | null>;
+  finalText: string;
+  proposal: ReviseProposal | null;
+  setProposal: (p: ReviseProposal | null) => void;
+  onAccept: (text: string) => void;
+  onCitationClick: (f: string, l: number) => void;
+}) {
+  const [custom, setCustom] = useState("");
 
-      {/* Signature block */}
-      <div className="rounded border border-slate-200 p-3 mb-4 text-sm">
-        <div className="font-semibold mb-2">§13663(a)(2) — Officer attestation</div>
-        {isSigned && report.signature ? (
-          <div className="space-y-1 text-xs">
-            <div><strong>Signed by:</strong> {report.signature.display_name}</div>
-            <div><strong>Badge:</strong> {report.signature.badge_number || "—"}</div>
-            <div><strong>At:</strong> {report.signature.signed_at}</div>
-            <div className="font-mono text-[10px] break-all">
-              <strong>Content hash:</strong> {report.signature.content_sha256}
-            </div>
-            <div className="italic text-slate-600 mt-2">"{report.signature.attestation_text}"</div>
-          </div>
-        ) : (
-          <div className="space-y-2">
-            <div className="text-[11px] text-slate-600 italic">
-              Your signature uses your authenticated identity ({displayName || "current session"}).
-              The badge number you enter is recorded next to your user id for auditor review.
-              §13663(a)(2) requires the signer be the named officer.
-            </div>
-            <label className="block">
-              <span className="text-xs text-slate-600">Badge #</span>
-              <input
-                className="mt-1 w-full border border-slate-300 rounded px-2 py-1 text-sm"
-                value={badge}
-                onChange={(e) => setBadge(e.target.value)}
-                placeholder="e.g. 7787"
-              />
-            </label>
-          </div>
-        )}
+  const reviseMut = useMutation({
+    mutationFn: (args: { instruction: string; selected_text?: string }) =>
+      reviseReport(reportId, args),
+    onSuccess: (data) => setProposal(data),
+  });
+
+  const sendQuick = (instruction: string, needsSelection: boolean | undefined) => {
+    const el = textareaRef.current;
+    const selection = el && el.selectionStart !== el.selectionEnd
+      ? finalText.slice(el.selectionStart, el.selectionEnd)
+      : "";
+    if (needsSelection && !selection) {
+      alert("Select the text you want to rewrite, then click again.");
+      return;
+    }
+    reviseMut.mutate({
+      instruction,
+      selected_text: selection || undefined,
+    });
+  };
+
+  const sendCustom = () => {
+    if (!custom.trim()) return;
+    const el = textareaRef.current;
+    const selection = el && el.selectionStart !== el.selectionEnd
+      ? finalText.slice(el.selectionStart, el.selectionEnd)
+      : "";
+    reviseMut.mutate({
+      instruction: custom.trim(),
+      selected_text: selection || undefined,
+    });
+    setCustom("");
+  };
+
+  return (
+    <div className="rounded border border-blue-200 bg-blue-50/40 p-3">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-xs uppercase tracking-wide font-semibold text-blue-900">
+          🤖 Ask AI to revise
+        </span>
+        <span className="text-[11px] text-blue-900/70">
+          Proposals are never auto-applied. You accept or discard.
+        </span>
       </div>
-
-      {/* Errors */}
-      {[editMut, signMut, exportMut].map((m, i) =>
-        m.error ? (
-          <div key={i} className="text-sm text-red-700 mb-2">
-            {(m.error as Error).message}
-          </div>
-        ) : null
-      )}
-
-      {/* Actions */}
-      <div className="flex flex-wrap justify-end gap-2 mt-2">
-        {isDraft ? (
-          <>
-            <button
-              type="button"
-              onClick={() => editMut.mutate()}
-              disabled={editMut.isPending}
-              className="px-3 py-1.5 text-sm rounded border border-slate-300"
-            >
-              {editMut.isPending ? "Saving…" : "Save draft"}
-            </button>
-            <button
-              type="button"
-              onClick={() => signMut.mutate()}
-              disabled={signMut.isPending}
-              className="px-3 py-1.5 text-sm rounded bg-emerald-600 text-white disabled:opacity-50"
-              title="§13663(a)(2): signing attests review + factual accuracy. Required before export."
-            >
-              {signMut.isPending ? "Signing…" : "Sign report"}
-            </button>
-          </>
-        ) : null}
-        {report.status === "signed" ? (
+      <div className="flex flex-wrap gap-1 mb-2">
+        {QUICK_INSTRUCTIONS.map((q) => (
           <button
+            key={q.label}
             type="button"
-            onClick={() => exportMut.mutate()}
-            disabled={exportMut.isPending}
-            className="px-3 py-1.5 text-sm rounded bg-blue-600 text-white disabled:opacity-50"
+            onClick={() => sendQuick(q.instruction, q.needsSelection)}
+            disabled={reviseMut.isPending}
+            className="text-xs px-2 py-1 rounded border border-blue-300 bg-white hover:bg-blue-100 disabled:opacity-50"
+            title={q.needsSelection ? "Select text first, then click." : q.instruction}
           >
-            {exportMut.isPending ? "Exporting…" : "Export PDF"}
+            {q.label}{q.needsSelection ? " (selection)" : ""}
           </button>
-        ) : null}
-        {report.status === "exported" ? (
-          <>
-            <a
-              href={reportPdfUrl(report.id)}
-              target="_blank"
-              rel="noreferrer"
-              className="px-3 py-1.5 text-sm rounded bg-blue-600 text-white hover:bg-blue-700"
-              title="Your official report — goes in the case file."
-            >
-              📄 Signed report ↗
-            </a>
-            <a
-              href={reportChainPdfUrl(report.id)}
-              target="_blank"
-              rel="noreferrer"
-              className="px-3 py-1.5 text-sm rounded bg-amber-600 text-white hover:bg-amber-700"
-              title="§13663(c) chain-of-custody audit trail — for legal review, not the case file."
-            >
-              🔎 Audit trail ↗
-            </a>
-          </>
-        ) : null}
-        <button type="button" onClick={onClose} className="px-3 py-1.5 text-sm rounded border border-slate-300">
-          Close
+        ))}
+      </div>
+      <div className="flex gap-1">
+        <input
+          type="text"
+          value={custom}
+          onChange={(e) => setCustom(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") sendCustom(); }}
+          placeholder='e.g. "Add the witness statement from doc 3 to the narrative section"'
+          className="flex-1 border border-slate-300 rounded px-2 py-1 text-xs"
+          disabled={reviseMut.isPending}
+        />
+        <button
+          type="button"
+          onClick={sendCustom}
+          disabled={reviseMut.isPending || !custom.trim()}
+          className="text-xs px-3 py-1 rounded bg-blue-600 text-white disabled:opacity-50"
+        >
+          {reviseMut.isPending ? "Asking…" : "Ask"}
+        </button>
+      </div>
+      {reviseMut.error ? (
+        <div className="mt-2 text-xs text-red-700">{(reviseMut.error as Error).message}</div>
+      ) : null}
+
+      {proposal ? (
+        <ProposalPanel
+          proposal={proposal}
+          onAccept={onAccept}
+          onDiscard={() => setProposal(null)}
+          onCitationClick={onCitationClick}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function ProposalPanel({
+  proposal, onAccept, onDiscard, onCitationClick,
+}: {
+  proposal: ReviseProposal;
+  onAccept: (text: string) => void;
+  onDiscard: () => void;
+  onCitationClick: (f: string, l: number) => void;
+}) {
+  return (
+    <div className="mt-3 rounded border border-blue-300 bg-white">
+      <div className="px-2 py-1 border-b border-blue-200 bg-blue-50 text-[11px] text-blue-900 flex items-center justify-between">
+        <span>
+          ✨ AI proposal · {proposal.applies_to === "selection" ? "replaces your selection" : "replaces the whole draft"}
+        </span>
+        <span className="font-mono text-[10px] text-blue-900/70">
+          {proposal.provider}:{proposal.model} · {proposal.completion_tokens} tok
+        </span>
+      </div>
+      <div className="px-3 py-2 text-sm max-h-64 overflow-y-auto leading-relaxed whitespace-pre-wrap">
+        <CitationText text={proposal.proposed_text} onCitationClick={onCitationClick} />
+      </div>
+      <div className="px-2 py-1 border-t border-blue-200 flex justify-end gap-1">
+        <button
+          type="button"
+          onClick={onDiscard}
+          className="text-xs px-2 py-1 rounded border border-slate-300"
+        >
+          Discard
+        </button>
+        <button
+          type="button"
+          onClick={() => onAccept(proposal.proposed_text)}
+          className="text-xs px-2 py-1 rounded bg-emerald-600 text-white"
+        >
+          Accept into draft
         </button>
       </div>
     </div>
   );
 }
 
-function EditorialWorkAccordion({
-  report,
-  onCitationClick,
-}: {
-  report: Report;
-  onCitationClick: (filename: string, line: number) => void;
-}) {
-  void onCitationClick;
+function EditorialWorkPanel({ report }: { report: Report }) {
   const { data, isLoading, error } = useQuery({
     queryKey: ["report-diff", report.id, report.signed_at],
     queryFn: () => getReportDiff(report.id),
     enabled: !!report.id,
   });
-
   return (
-    <details className="mb-4 rounded border border-blue-200 bg-blue-50/40 p-3 text-xs">
-      <summary className="cursor-pointer font-semibold text-blue-900">
-        Officer's editorial work — what you changed from the AI's first draft
-      </summary>
-      <div className="mt-2 text-[11px] text-blue-900/90 italic">
-        Removing unsupported claims, verifying facts, and improving clarity are your
-        professional responsibilities. The AI is a tool. Your signature means you
-        reviewed everything and stand behind every claim that remained.
+    <section className="rounded border border-slate-200 bg-white p-3">
+      <div className="text-xs uppercase tracking-wide font-semibold text-slate-700 mb-1">
+        Editorial work — what you changed from the AI's first draft
       </div>
-      {isLoading ? <div className="mt-2 text-slate-500">Computing diff…</div> : null}
-      {error ? <div className="mt-2 text-red-700">{(error as Error).message}</div> : null}
+      {isLoading ? <div className="text-xs text-slate-500">Computing diff…</div> : null}
+      {error ? <div className="text-xs text-red-700">{(error as Error).message}</div> : null}
       {data ? (
         <>
-          <div className="mt-3 text-[11px] text-slate-700">
+          <div className="text-[11px] text-slate-700 mb-2">
             Similarity: <strong>{(data.stats.similarity_ratio * 100).toFixed(1)}%</strong>
-            {" · "}Compared against: <em>{data.compared_to_label}</em>
+            {" · "}compared against <em>{data.compared_to_label}</em>
           </div>
           {data.stats.no_edits ? (
-            <div className="mt-2 px-2 py-1.5 rounded border border-emerald-200 bg-emerald-50 text-emerald-900">
-              Officer signed the AI's first draft verbatim — no edits.
+            <div className="px-2 py-1.5 rounded border border-emerald-200 bg-emerald-50 text-emerald-900 text-xs">
+              Officer accepted the AI's first draft verbatim — no edits.
             </div>
           ) : (
-            <div className="mt-3 text-sm leading-relaxed whitespace-pre-wrap p-3 rounded border border-slate-200 bg-white max-h-96 overflow-y-auto">
+            <div className="text-sm leading-relaxed whitespace-pre-wrap p-2 rounded border border-slate-200 bg-slate-50 max-h-72 overflow-y-auto">
               {data.segments.map((seg, i) => {
-                if (seg.op === "equal") {
-                  return <span key={i} className="text-slate-600">{seg.text} </span>;
-                }
-                if (seg.op === "officer_added") {
-                  return <u key={i} className="text-blue-800">{seg.text} </u>;
-                }
+                if (seg.op === "equal") return <span key={i} className="text-slate-600">{seg.text} </span>;
+                if (seg.op === "officer_added") return <u key={i} className="text-blue-800">{seg.text} </u>;
                 return <s key={i} className="text-slate-400">{seg.text} </s>;
               })}
             </div>
@@ -496,16 +690,207 @@ function EditorialWorkAccordion({
             href={reportDiffPdfUrl(report.id)}
             target="_blank"
             rel="noreferrer"
-            className="inline-block mt-3 px-2 py-1 text-xs rounded border border-blue-300 bg-white hover:bg-blue-100 text-blue-800"
+            className="inline-block mt-2 text-[11px] text-blue-700 hover:underline"
           >
             Download editorial-work PDF ↗
           </a>
         </>
       ) : null}
-    </details>
+    </section>
   );
 }
 
+// ── Right pane: disclosure + sign + deliver ─────────────────────────────────
+
+function DisclosurePanel({ report }: { report: Report }) {
+  return (
+    <section className="p-4 border-b border-slate-200">
+      <div className="text-[11px] uppercase tracking-wide font-semibold text-amber-900 mb-1">
+        AI disclosure (§13663(a)(1))
+      </div>
+      <div className="rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-900">
+        {report.statutory_disclosure}
+      </div>
+      {report.ai_programs_used.length > 0 ? (
+        <div className="mt-2 text-[11px] text-slate-700">
+          <div className="font-semibold mb-0.5">AI program(s)</div>
+          <ul className="space-y-0.5">
+            {report.ai_programs_used.map((p, i) => (
+              <li key={i} className="font-mono">{p.name} {p.version}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function SignaturePanel({
+  badge, setBadge, onSign, onSaveDraft, signPending, savePending, dirty, error,
+}: {
+  badge: string;
+  setBadge: (s: string) => void;
+  onSign: () => void;
+  onSaveDraft: () => void;
+  signPending: boolean;
+  savePending: boolean;
+  dirty: boolean;
+  error: Error | null;
+}) {
+  return (
+    <section className="p-4 border-b border-slate-200">
+      <div className="text-[11px] uppercase tracking-wide font-semibold text-slate-700 mb-1">
+        Sign (§13663(a)(2))
+      </div>
+      <div className="text-[11px] text-slate-600 mb-2">
+        Your signature uses your authenticated session identity. The badge below
+        is recorded in the audit log next to your user id for reviewer cross-check.
+      </div>
+      <label className="block mb-2">
+        <span className="text-[11px] text-slate-600">Badge #</span>
+        <input
+          type="text"
+          value={badge}
+          onChange={(e) => setBadge(e.target.value)}
+          placeholder="e.g. 7787"
+          className="mt-0.5 w-full border border-slate-300 rounded px-2 py-1 text-sm"
+        />
+      </label>
+      {error ? <div className="text-xs text-red-700 mb-2">{error.message}</div> : null}
+      <div className="flex flex-col gap-1.5">
+        <button
+          type="button"
+          onClick={onSaveDraft}
+          disabled={savePending || !dirty}
+          className="px-2 py-1.5 text-xs rounded border border-slate-300 disabled:opacity-50"
+        >
+          {savePending ? "Saving…" : dirty ? "Save draft" : "Saved"}
+        </button>
+        <button
+          type="button"
+          onClick={onSign}
+          disabled={signPending}
+          className="px-2 py-1.5 text-sm rounded bg-emerald-600 text-white disabled:opacity-50 font-medium"
+          title="§13663(a)(2): signing attests review and factual accuracy. Required before export."
+        >
+          {signPending ? "Signing…" : "✓ Sign report"}
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function SignedPanel({ report }: { report: Report }) {
+  if (!report.signature) return null;
+  return (
+    <section className="p-4 border-b border-slate-200">
+      <div className="text-[11px] uppercase tracking-wide font-semibold text-emerald-700 mb-1">
+        ✓ Signed (§13663(a)(2))
+      </div>
+      <div className="text-xs space-y-0.5">
+        <div><strong>By:</strong> {report.signature.display_name}</div>
+        <div><strong>Badge:</strong> {report.signature.badge_number || "—"}</div>
+        <div><strong>At:</strong> {report.signature.signed_at ? new Date(report.signature.signed_at).toLocaleString() : "—"}</div>
+      </div>
+      <div className="mt-2 font-mono text-[10px] text-slate-500 break-all">
+        sha256: {report.signature.content_sha256.slice(0, 32)}…
+      </div>
+      <div className="mt-2 italic text-[11px] text-slate-600">
+        "{report.signature.attestation_text}"
+      </div>
+    </section>
+  );
+}
+
+function DeliverPanel({
+  caseId, report, onExport, exportPending, error,
+}: {
+  caseId: string;
+  report: Report;
+  onExport: () => void;
+  exportPending: boolean;
+  error: Error | null;
+}) {
+  const [discoveryUrl, setDiscoveryUrl] = useState<string | null>(null);
+  const discoveryMut = useMutation({
+    mutationFn: () => exportDiscoveryPackage(caseId, {
+      reason: `Discovery package for signed report ${report.id.slice(-8)}`,
+      report_ids: [report.id],
+    }),
+    onSuccess: (pkg) => setDiscoveryUrl(discoveryPackageDownloadUrl(caseId, pkg.zip_filename)),
+  });
+
+  const exported = report.status === "exported";
+  return (
+    <section className="p-4">
+      <div className="text-[11px] uppercase tracking-wide font-semibold text-blue-700 mb-2">
+        Deliver
+      </div>
+      {!exported ? (
+        <>
+          <div className="text-[11px] text-slate-600 mb-2">
+            Render the §13663-compliant PDF + chain-of-custody bundle.
+          </div>
+          <button
+            type="button"
+            onClick={onExport}
+            disabled={exportPending}
+            className="w-full px-2 py-1.5 text-sm rounded bg-blue-600 text-white disabled:opacity-50 font-medium"
+          >
+            {exportPending ? "Exporting…" : "📦 Export to PDF"}
+          </button>
+          {error ? <div className="text-xs text-red-700 mt-2">{error.message}</div> : null}
+        </>
+      ) : (
+        <div className="space-y-2">
+          <a
+            href={reportPdfUrl(report.id)}
+            target="_blank"
+            rel="noreferrer"
+            className="block w-full text-center px-2 py-1.5 text-sm rounded bg-blue-600 text-white hover:bg-blue-700 font-medium"
+            title="The signed report. Attach to case file."
+          >
+            📄 Signed report PDF ↗
+          </a>
+          <a
+            href={reportChainPdfUrl(report.id)}
+            target="_blank"
+            rel="noreferrer"
+            className="block w-full text-center px-2 py-1.5 text-sm rounded bg-amber-600 text-white hover:bg-amber-700"
+            title="§13663(c) chain-of-custody audit trail."
+          >
+            🔎 Chain-of-custody PDF ↗
+          </a>
+          <button
+            type="button"
+            onClick={() => discoveryMut.mutate()}
+            disabled={discoveryMut.isPending}
+            className="w-full px-2 py-1.5 text-sm rounded border border-blue-300 bg-white hover:bg-blue-50 text-blue-800 disabled:opacity-50"
+            title="Hash-pinned ZIP — report + chain + source documents. Shareable with the DA."
+          >
+            {discoveryMut.isPending ? "Building…" : "🗄️ Generate discovery package"}
+          </button>
+          {discoveryUrl ? (
+            <a
+              href={discoveryUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="block text-[11px] text-blue-700 hover:underline truncate"
+              title={discoveryUrl}
+            >
+              ↓ download package
+            </a>
+          ) : null}
+          {discoveryMut.error ? (
+            <div className="text-xs text-red-700">{(discoveryMut.error as Error).message}</div>
+          ) : null}
+        </div>
+      )}
+    </section>
+  );
+}
+
+// ── Status badge ────────────────────────────────────────────────────────────
 
 function StatusBadge({ status }: { status: Report["status"] }) {
   const map: Record<Report["status"], string> = {
@@ -515,7 +900,7 @@ function StatusBadge({ status }: { status: Report["status"] }) {
     superseded: "bg-slate-200 text-slate-600",
   };
   return (
-    <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${map[status]}`}>
+    <span className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium ${map[status]}`}>
       {status}
     </span>
   );
