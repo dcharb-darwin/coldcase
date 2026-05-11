@@ -190,13 +190,18 @@ function ReportEditor({
     },
   });
 
+  // ALL hooks must run on every render, before any conditional return —
+  // moving useMemo below the `if (!report)` early-return below would violate
+  // the Rules of Hooks and React panics with "Rendered more hooks than
+  // during the previous render."
+  const citationCount = useMemo(() => extractCitations(finalText).length, [finalText]);
+
   if (!report) {
     return <div className="p-6 text-slate-500">Loading report…</div>;
   }
 
   const isDraft = report.status === "draft";
   const isSigned = report.status === "signed" || report.status === "exported";
-  const citationCount = useMemo(() => extractCitations(finalText).length, [finalText]);
 
   return (
     <div className="p-6">
