@@ -214,11 +214,21 @@ export default function ChatPanel({ caseId, documents, media, onPromote, onCitat
                 </span>
               </div>
               {m.role === "assistant" ? (
-                <CitationText
-                  text={m.content}
-                  onCitationClick={onCitationClick}
-                  knownFilenames={documents.map((d) => d.original_filename)}
-                />
+                <>
+                  {(m as Message & { extra?: Record<string, unknown> }).extra?.refusal_detected ? (
+                    <div className="mb-1.5 px-2 py-1 rounded border border-red-300 bg-red-50 text-red-800 text-[11px]">
+                      ⚠ The assistant hedged about document access even though
+                      <strong> {m.in_context_document_ids.length} </strong>
+                      document(s) were supplied. Check the extraction badges in
+                      the left sidebar — and re-ask if needed; this often resolves itself on retry.
+                    </div>
+                  ) : null}
+                  <CitationText
+                    text={m.content}
+                    onCitationClick={onCitationClick}
+                    knownFilenames={documents.map((d) => d.original_filename)}
+                  />
+                </>
               ) : (
                 <div className="whitespace-pre-wrap leading-relaxed">{m.content}</div>
               )}

@@ -3,12 +3,14 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   getCase,
   getDocumentText,
+  getDocumentTextStatus,
   listConversations,
   listReportsForCase,
   registerDocument,
   registerMedia,
   startConversation,
   type Document,
+  type DocumentTextStatus,
   type MediaInput,
   type Message,
   type Report,
@@ -126,9 +128,13 @@ export default function CaseDetailPage({ caseId }: CaseDetailPageProps) {
                       activeDocId === d.id ? "bg-blue-100 text-blue-900" : "hover:bg-slate-100"
                     }`}
                   >
-                    📄 <span className="font-medium">{d.original_filename}</span>
-                    <div className="font-mono text-[10px] text-slate-500">
-                      {d.sha256.slice(0, 12)}…
+                    <div className="flex items-center gap-1.5">
+                      <span>📄</span>
+                      <span className="font-medium truncate">{d.original_filename}</span>
+                    </div>
+                    <div className="flex items-center justify-between mt-0.5">
+                      <span className="font-mono text-[10px] text-slate-500">{d.sha256.slice(0, 12)}…</span>
+                      <ExtractionBadge caseId={caseId} documentId={d.id} />
                     </div>
                   </button>
                 </li>
@@ -219,6 +225,40 @@ function SidebarSection({
       </div>
       {children}
     </div>
+  );
+}
+
+function ExtractionBadge({ caseId, documentId }: { caseId: string; documentId: string }) {
+  const { data } = useQuery({
+    queryKey: ["doc-text-status", caseId, documentId],
+    queryFn: () => getDocumentTextStatus(caseId, documentId),
+    staleTime: 60_000,
+  });
+  if (!data) {
+    return <span className="text-[10px] text-slate-400">…</span>;
+  }
+  const { method, non_ws_chars } = data;
+  const palette: Record<DocumentTextStatus["method"], string> = {
+    "text-layer": "bg-emerald-100 text-emerald-800",
+    "ocr":        "bg-amber-100 text-amber-800",
+    "plaintext":  "bg-slate-100 text-slate-700",
+    "empty":      "bg-red-100 text-red-800",
+    "error":      "bg-red-100 text-red-800",
+  };
+  const label: Record<DocumentTextStatus["method"], string> = {
+    "text-layer": "text",
+    "ocr":        "ocr",
+    "plaintext":  "text",
+    "empty":      "empty",
+    "error":      "err",
+  };
+  return (
+    <span
+      className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${palette[method]}`}
+      title={`Extraction: ${method} · ${non_ws_chars.toLocaleString()} non-ws chars · the AI can ${method === "empty" || method === "error" ? "NOT" : ""} see this doc`}
+    >
+      {label[method]} · {non_ws_chars >= 1000 ? `${Math.round(non_ws_chars / 1000)}k` : non_ws_chars}
+    </span>
   );
 }
 

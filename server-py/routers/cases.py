@@ -236,12 +236,33 @@ def get_document_text(case_id: str, doc_id: str, user: CurrentUser = Depends(cur
     if not doc:
         raise HTTPException(404, "Document not found")
 
-    from services.document_text import extract_text
+    from services.document_text import extract_text, text_status
     text = extract_text(doc)
     if not text:
         raise HTTPException(404, f"Could not extract text from {doc.original_filename}")
     lines = text.splitlines()
-    return {"document": doc.to_dict(), "text": text, "lines": lines, "line_count": len(lines)}
+    status = text_status(doc)
+    return {
+        "document": doc.to_dict(),
+        "text": text,
+        "lines": lines,
+        "line_count": len(lines),
+        "extraction_method": status["method"],
+    }
+
+
+@router.get("/{case_id}/documents/{doc_id}/text-status")
+def get_document_text_status(case_id: str, doc_id: str, user: CurrentUser = Depends(current_user)):
+    """Lightweight status for the document sidebar badge. Triggers extraction
+    if cold, but result is cached after first call per immutable (id, sha256)."""
+    case = Case.objects(id=case_id, tenant_id=user.tenant_id).first()
+    if not case:
+        raise HTTPException(404, "Case not found")
+    doc = Document.objects(id=doc_id, case=case).first()
+    if not doc:
+        raise HTTPException(404, "Document not found")
+    from services.document_text import text_status
+    return {"document_id": str(doc.id), "filename": doc.original_filename, **text_status(doc)}
 
 
 # ── Media inputs ────────────────────────────────────────────────────────────

@@ -78,42 +78,62 @@ def _extract_via_ocr(path: str) -> str:
 
 
 @lru_cache(maxsize=256)
-def _read(document_id: str, sha256: str, storage_uri: str, mime_type: str, filename: str) -> str:
-    """Cache key includes sha256 so a re-registration with new bytes evicts."""
+def _read(document_id: str, sha256: str, storage_uri: str, mime_type: str, filename: str) -> tuple[str, str]:
+    """Returns (text, method). Cache key includes sha256 so re-registration
+    with new bytes evicts. `method` is one of: text-layer, ocr, plaintext, empty.
+    """
     storage = get_document_storage_provider()
     path = storage.resolve_path(storage_uri)
 
     is_pdf = mime_type == "application/pdf" or filename.lower().endswith(".pdf")
     if not is_pdf:
         with open(path, "rb") as f:
-            return f.read().decode("utf-8", errors="replace")
+            return f.read().decode("utf-8", errors="replace"), "plaintext"
 
     text, page_count = _extract_via_pypdf(path)
     if page_count == 0:
-        return text
+        return text, "empty"
 
-    # If the embedded text layer averages fewer than OCR_MIN_CHARS_PER_PAGE
-    # characters of non-whitespace per page, the PDF is effectively a scan —
-    # OCR it. ada's pattern: trust the text layer when it's there.
     non_ws_chars = sum(1 for c in text if not c.isspace())
     if non_ws_chars >= OCR_MIN_CHARS_PER_PAGE * page_count:
-        return text
+        return text, "text-layer"
 
     logger.info(
         "OCR fallback for %s (%s): pypdf got %d non-ws chars across %d pages",
         filename, document_id, non_ws_chars, page_count,
     )
     ocr_text = _extract_via_ocr(path)
-    return ocr_text or text  # prefer OCR; fall back to whatever pypdf gave
+    if ocr_text.strip():
+        return ocr_text, "ocr"
+    return text, "empty"
 
 
 def extract_text(doc: Document) -> str:
-    """Extract text from a Document. Returns empty string on failure (caller decides what to do)."""
+    """Best-effort text extraction. Returns empty string on failure."""
     try:
-        return _read(str(doc.id), doc.sha256, doc.storage_uri, doc.mime_type, doc.original_filename)
+        text, _ = _read(str(doc.id), doc.sha256, doc.storage_uri, doc.mime_type, doc.original_filename)
+        return text
     except Exception:
         logger.exception("extract_text failed for doc %s", doc.id)
         return ""
+
+
+def text_status(doc: Document) -> dict:
+    """Extract + report status. After first call for a given (id, sha) pair,
+    subsequent calls are near-instant via lru_cache. Used by the document
+    sidebar to render the per-doc extraction badge."""
+    try:
+        text, method = _read(str(doc.id), doc.sha256, doc.storage_uri, doc.mime_type, doc.original_filename)
+    except Exception:
+        logger.exception("text_status failed for doc %s", doc.id)
+        return {"method": "error", "chars": 0, "non_ws_chars": 0, "line_count": 0}
+    non_ws = sum(1 for c in text if not c.isspace())
+    return {
+        "method": method,  # text-layer | ocr | plaintext | empty | error
+        "chars": len(text),
+        "non_ws_chars": non_ws,
+        "line_count": len(text.splitlines()),
+    }
 
 
 def number_lines(text: str) -> str:

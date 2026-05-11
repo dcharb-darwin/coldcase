@@ -80,7 +80,48 @@ def list_messages(conversation_id: str, user: CurrentUser = Depends(current_user
     }
 
 
+# Phrases that indicate the LLM hedged about document access despite our
+# having injected the document text into its context. Tripping any of these
+# while documents WERE provided flips `extra.refusal_detected` on the message
+# so the UI can surface a warning and we have an audit trail.
+_REFUSAL_PHRASES: tuple[str, ...] = (
+    "do not have access",
+    "don't have access",
+    "no access to the content",
+    "cannot directly quote",
+    "cannot quote specific",
+    "do not have extractable",
+    "no extractable content",
+    "please provide the document",
+    "please share the relevant",
+    "if you can provide",
+    "if you could provide",
+    "i am unable to access",
+    "i'm unable to access",
+)
+
+
+def _detect_refusal(content: str) -> bool:
+    lo = (content or "").lower()
+    return any(p in lo for p in _REFUSAL_PHRASES)
+
+
 CITATION_INSTRUCTIONS = """\
+=== DOCUMENT ACCESS — READ THIS BEFORE RESPONDING ===
+
+The documents listed below appear between `--- BEGIN DOCUMENT: <filename> ---`
+and `--- END DOCUMENT: <filename> ---` markers. **If a document appears
+between those markers, you HAVE that document's contents and you must analyze
+it.** You may not respond with phrases like "I do not have access," "I cannot
+directly quote," "no extractable content," or "please provide the documents"
+for any document that appears below — that is factually incorrect and breaks
+the §13663 audit trail.
+
+Some documents are OCR'd from scans and may contain artifacts (misspellings,
+spacing oddities, partial words). Work with the legible portions. If a passage
+is too garbled to interpret, say "the OCR at [src: <file>, L<n>] is illegible"
+— but do this only for specific passages, not as a blanket refusal.
+
 === CITATION REQUIREMENTS — MANDATORY ===
 
 Every factual claim in your response MUST be followed by a citation token of
@@ -192,8 +233,12 @@ def send_message(conversation_id: str, body: SendMessageBody, user: CurrentUser 
     llm = get_llm_provider()
     system_prompt = _build_system_prompt(case, documents, media)
     response = llm.chat(system=system_prompt, user=body.content)
+    refusal_detected = _detect_refusal(response.content) if documents else False
 
     # Persist assistant response.
+    assistant_extra = dict(response.extra or {})
+    if refusal_detected:
+        assistant_extra["refusal_detected"] = True
     assistant_msg = Message(
         tenant_id=user.tenant_id, conversation=conv,
         role=MessageRole.ASSISTANT.value, content=response.content,
@@ -203,7 +248,7 @@ def send_message(conversation_id: str, body: SendMessageBody, user: CurrentUser 
         in_context_media_ids=[str(m.id) for m in media],
         model=response.model, provider=response.provider,
         prompt_tokens=response.prompt_tokens, completion_tokens=response.completion_tokens,
-        extra=response.extra,
+        extra=assistant_extra,
     ).save()
     case_audit.log(
         tenant_id=user.tenant_id, user_id=user.user_id,
@@ -211,7 +256,11 @@ def send_message(conversation_id: str, body: SendMessageBody, user: CurrentUser 
         event_type=AuditEventType.MESSAGE_ASSISTANT,
         case_id=str(case.id), conversation_id=str(conv.id), message_id=str(assistant_msg.id),
         summary=f"{response.provider}:{response.model} responded ({response.completion_tokens} tokens)",
-        detail={"model": response.model, "provider": response.provider},
+        detail={
+            "model": response.model,
+            "provider": response.provider,
+            "refusal_detected": refusal_detected,
+        },
     )
 
     conv.last_message_at = datetime.utcnow()

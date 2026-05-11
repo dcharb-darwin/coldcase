@@ -196,13 +196,30 @@ export async function updateCase(id: string, body: Partial<{
   return data;
 }
 
+export type ExtractionMethod = "text-layer" | "ocr" | "plaintext" | "empty" | "error";
+
+export interface DocumentTextStatus {
+  document_id: string;
+  filename: string;
+  method: ExtractionMethod;
+  chars: number;
+  non_ws_chars: number;
+  line_count: number;
+}
+
 export async function getDocumentText(caseId: string, documentId: string): Promise<{
   document: Document;
   text: string;
   lines: string[];
   line_count: number;
+  extraction_method: ExtractionMethod;
 }> {
   const { data } = await http.get(`/cases/${caseId}/documents/${documentId}/text`);
+  return data;
+}
+
+export async function getDocumentTextStatus(caseId: string, documentId: string): Promise<DocumentTextStatus> {
+  const { data } = await http.get(`/cases/${caseId}/documents/${documentId}/text-status`, { timeout: 120000 });
   return data;
 }
 
