@@ -1,7 +1,23 @@
 # Session State — Cold Case
 
 **Last Updated:** 2026-05-11
-**Last Session:** Frontend MVP + OpenAI provider; stack boots and proxies cleanly
+**Last Session:** Initial push to `dcharb-darwin/coldcase` + worktree workflow established
+
+## Git remote + worktree workflow
+
+- Remote: `git@github.com:dcharb-darwin/coldcase.git` (SSH).
+- Identity for this app: **dcharb-darwin · daniel.charboneau@darwingov.com**.
+- Always commit via the `-c user.name= -c user.email=` flags — do NOT run `git config`.
+- Every feature/fix commit ends with a `[trace: <slug>]` trailer (durable rule).
+- Worktrees live in the sibling dir `../coldcase.worktrees/`. To spin one up:
+  ```
+  cd /Users/dcharb/Documents/Claude/Projects/hopkinsville/coldcase
+  git worktree add ../coldcase.worktrees/<slug> -b feature/<slug>
+  ```
+  Each worktree gets its own running stack — bring it up with `./dev.sh` from that
+  directory. If the default 7787/27022/5178 triplet is in use, override ports via a
+  per-worktree `.env` (and only update `knowledge/launchpad/port-allocation.md` when
+  the change is durable across worktrees).
 
 ## 2026-05-11 — scaffold + discovery
 
