@@ -483,6 +483,27 @@ export async function deleteNote(caseId: string, noteId: string): Promise<void> 
   await http.delete(`/cases/${caseId}/notes/${noteId}`);
 }
 
+// ── Next-step suggestions (Phase C — state-aware) ────────────────────────
+
+export type NextStepCategory =
+  | "interview" | "evidence" | "legal"
+  | "documentation" | "research" | "other";
+
+export interface NextStepSuggestion {
+  step: string;
+  category: NextStepCategory;
+  rationale: string;
+}
+
+export async function suggestNextSteps(caseId: string): Promise<{
+  suggestions: NextStepSuggestion[];
+  model?: string;
+  reason?: string;
+}> {
+  const { data } = await http.post(`/cases/${caseId}/next-steps/suggestions`);
+  return data;
+}
+
 export async function getCase(id: string): Promise<{
   case: Case; documents: Document[]; media: MediaInput[];
 }> {

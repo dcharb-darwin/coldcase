@@ -7,6 +7,7 @@ import {
   getDocumentText,
   getDocumentTextStatus,
   assignTag,
+  createNote,
   createPerson,
   createTimelineEntry,
   deletePerson,
@@ -22,6 +23,7 @@ import {
   searchPersons,
   suggestCasePersons,
   suggestCaseTags,
+  suggestNextSteps,
   suggestTimelineEntries,
   registerDocument,
   sendMessage,
@@ -34,6 +36,7 @@ import {
   type DocumentTextStatus,
   type MediaInput,
   type Message,
+  type NextStepSuggestion,
   type Person,
   type PersonRole,
   type PersonSuggestion,
@@ -421,7 +424,9 @@ function BriefTab({
           </div>
         </section>
 
-        {/* What's needed next — present when there's something to do. */}
+        {/* Two layers of "what's next":
+              - amber banner = rule-based mechanical hints (set incident date, sign drafts)
+              - AI suggester = state-aware investigative steps grounded in the case docs */}
         {nextSteps.length > 0 ? (
           <section className="border border-amber-200 bg-amber-50/60 rounded p-3">
             <div className="text-[12px] font-semibold text-amber-900 mb-1">Suggested next step</div>
@@ -432,6 +437,8 @@ function BriefTab({
             </ul>
           </section>
         ) : null}
+
+        <NextStepSuggester caseId={c.id} />
 
         {/* Key dates — vertical timeline of meaningful moments. */}
         <section>
@@ -797,6 +804,122 @@ const PERSON_ROLES: { value: PersonRole; label: string; color: string }[] = [
   { value: "person_of_interest", label: "Person of interest", color: "bg-purple-50 text-purple-800 border-purple-200" },
   { value: "other",              label: "Other",              color: "bg-slate-100 text-slate-700 border-slate-300" },
 ];
+
+// Category palette — semantic colors only used for the small category chip
+// next to each suggestion. Investigative actions vs research vs legal etc.
+const NEXT_STEP_CATEGORY_CLS: Record<string, string> = {
+  interview:     "bg-blue-50 text-blue-800 border-blue-200",
+  evidence:      "bg-emerald-50 text-emerald-800 border-emerald-200",
+  legal:         "bg-red-50 text-red-800 border-red-200",
+  documentation: "bg-amber-50 text-amber-800 border-amber-200",
+  research:      "bg-indigo-50 text-indigo-800 border-indigo-200",
+  other:         "bg-slate-100 text-slate-700 border-slate-300",
+};
+
+function NextStepSuggester({ caseId }: { caseId: string }) {
+  const qc = useQueryClient();
+  const [run, setRun] = useState(false);
+  const { data, isFetching, error, refetch } = useQuery({
+    queryKey: ["next-step-suggestions", caseId],
+    queryFn: () => suggestNextSteps(caseId),
+    enabled: run,
+    staleTime: 5 * 60_000,
+  });
+  const [dismissed, setDismissed] = useState<Set<string>>(new Set());
+
+  // Accepting a step pins it into Notes so it lives somewhere actionable.
+  // Category + rationale go into the body so the audit trail of the
+  // working memory is intact.
+  const acceptMut = useMutation({
+    mutationFn: (s: NextStepSuggestion) => createNote(caseId, {
+      subject_kind: "case", subject_id: caseId,
+      body: `[${s.category}] ${s.step}\n\nRationale: ${s.rationale}`,
+    }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["case-notes", caseId] });
+    },
+  });
+
+  const visible = (data?.suggestions ?? []).filter((s) => !dismissed.has(s.step));
+
+  return (
+    <section className="border border-indigo-200 bg-indigo-50/30 rounded p-3">
+      <div className="flex items-baseline justify-between gap-2 mb-2">
+        <div>
+          <h3 className="text-[12px] font-semibold text-slate-900">Investigative steps with AI</h3>
+          <div className="text-[11px] text-slate-500">
+            State-aware: reads the documents, people, reports, and timeline
+            to propose concrete next moves. Accept saves the step as a note.
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => { setRun(true); setDismissed(new Set()); refetch(); }}
+          disabled={isFetching}
+          className="px-2.5 py-1 text-xs rounded border border-indigo-300 bg-white text-indigo-800 hover:bg-indigo-50 disabled:opacity-50 shrink-0"
+        >
+          {isFetching ? "Thinking…" : run ? "Refresh" : "Suggest"}
+        </button>
+      </div>
+
+      {error ? <div className="text-xs text-red-700">{(error as Error).message}</div> : null}
+      {data?.reason ? <div className="text-xs text-slate-500 italic">{data.reason}</div> : null}
+
+      {run && !isFetching && visible.length === 0 && !error && !data?.reason ? (
+        <div className="text-xs text-slate-500 italic">
+          {data?.suggestions.length ? "All suggestions handled." : "No suggestions returned."}
+        </div>
+      ) : null}
+
+      {visible.length > 0 ? (
+        <ul className="space-y-1.5 mt-1">
+          {visible.map((s) => {
+            const accepted = acceptMut.isSuccess && acceptMut.variables?.step === s.step;
+            const catCls = NEXT_STEP_CATEGORY_CLS[s.category] ?? NEXT_STEP_CATEGORY_CLS.other!;
+            return (
+              <li
+                key={s.step}
+                className="flex items-start gap-2 p-2 bg-white border border-slate-200 rounded"
+              >
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-start gap-2">
+                    <span className={`inline-flex items-center px-2 py-0.5 rounded-full border text-[10px] capitalize shrink-0 ${catCls}`}>
+                      {s.category}
+                    </span>
+                    <span className="text-sm text-slate-900">{s.step}</span>
+                  </div>
+                  {s.rationale ? (
+                    <div className="text-[11px] text-slate-600 italic mt-1 leading-snug">
+                      {s.rationale}
+                    </div>
+                  ) : null}
+                </div>
+                <div className="flex flex-col gap-1 shrink-0">
+                  <button
+                    type="button"
+                    disabled={accepted || acceptMut.isPending}
+                    onClick={() => acceptMut.mutate(s)}
+                    className="px-2 py-0.5 text-[11px] rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                    title="Save to Notes as a working scratch item"
+                  >
+                    {accepted ? "Saved ✓" : "Pin to notes"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDismissed((p) => new Set(p).add(s.step))}
+                    className="px-2 py-0.5 text-[11px] rounded border border-slate-200 text-slate-600 hover:bg-slate-100"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
+    </section>
+  );
+}
 
 function PersonElsewhere({ name, excludeCaseId }: { name: string; excludeCaseId: string }) {
   // Quiet by default — only renders something when there's a real cross-case
