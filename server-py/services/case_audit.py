@@ -43,10 +43,14 @@ def log(
     summary: str = "",
     detail: dict[str, Any] | None = None,
 ) -> AuditEvent:
-    """Append-only audit log write. Never raises — failures are swallowed
-    with a log line so they don't break the user's action."""
+    """Append-only audit log write. Goes through the hash-chain inserter
+    so every event is sequenced and tamper-evident (§13663(c)). Never
+    raises — failures are swallowed with a log line so they don't break
+    the user's action."""
+    from services.audit_chain import insert_chained
+
     try:
-        return AuditEvent(
+        ev = AuditEvent(
             tenant_id=tenant_id,
             user_id=user_id,
             user_display=user_display,
@@ -60,7 +64,8 @@ def log(
             media_id=media_id,
             summary=summary,
             detail=detail or {},
-        ).save()
+        )
+        return insert_chained(ev)
     except Exception as exc:  # noqa: BLE001
         import logging
         logging.getLogger(__name__).warning("audit log write failed: %s", exc)

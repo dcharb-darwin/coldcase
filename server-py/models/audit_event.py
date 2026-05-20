@@ -10,8 +10,14 @@ from datetime import datetime
 from enum import Enum
 
 from mongoengine import (
-    Document as MEDocument, StringField, DateTimeField, DictField,
+    Document as MEDocument, StringField, DateTimeField, DictField, IntField,
 )
+
+
+# Genesis-event marker. The first event in a tenant's chain has no prior
+# event to hash against; use a zeroed-out 64-char string so the field is
+# always present and validation stays simple.
+GENESIS_PREV_HASH = "0" * 64
 
 
 class AuditEventType(str, Enum):
@@ -51,6 +57,16 @@ class AuditEvent(MEDocument):
             ("user_id", "-timestamp"),
             ("event_type", "-timestamp"),
             ("report_id", "-timestamp"),
+            # Per-tenant sequence is unique and monotonic. The unique index
+            # is the concurrency primitive: two racing writers will collide
+            # on the same `sequence` and the loser retries against the new
+            # latest event. Partial filter keeps pre-backfill rows (which
+            # have no sequence) out of the unique constraint.
+            {
+                "fields": ["tenant_id", "sequence"],
+                "unique": True,
+                "partialFilterExpression": {"sequence": {"$exists": True, "$gte": 0}},
+            },
         ],
     }
 
@@ -72,6 +88,18 @@ class AuditEvent(MEDocument):
     summary = StringField(default="")
     detail = DictField(default=dict)  # event-specific payload (old/new values, reason, etc.)
 
+    # ── Hash chain (§13663(c) tamper-evidence) ─────────────────────────────
+    # `sequence`        — monotonic per tenant; index unique. Assigned by
+    #                     services.case_audit.log on insert.
+    # `prev_event_hash` — sha256 hex of the prior event's `event_hash`.
+    #                     First event uses GENESIS_PREV_HASH.
+    # `event_hash`      — sha256 hex of (prev_event_hash || canonical(this)).
+    #                     Recomputable from the stored fields; any change to
+    #                     this row is detectable by the verify endpoint.
+    sequence = IntField()
+    prev_event_hash = StringField(default="")
+    event_hash = StringField(default="")
+
     def to_dict(self) -> dict:
         return {
             "id": str(self.id),
@@ -88,4 +116,7 @@ class AuditEvent(MEDocument):
             "media_id": self.media_id,
             "summary": self.summary,
             "detail": dict(self.detail or {}),
+            "sequence": self.sequence,
+            "prev_event_hash": self.prev_event_hash or "",
+            "event_hash": self.event_hash or "",
         }

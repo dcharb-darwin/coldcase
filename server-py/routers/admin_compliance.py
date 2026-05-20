@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends
 from core.config import get_settings
 from routers._deps import CurrentUser, current_user, require_perm
 from services import retention_scheduler
+from services.audit_chain import rechain_all, verify_chain
 
 
 router = APIRouter(prefix="/admin/compliance", tags=["Compliance"])
@@ -174,6 +175,37 @@ def _check_vendor_scope_module() -> Check:
         )
 
 
+def _check_audit_chain_integrity(tenant_id: str) -> Check:
+    """§13663(c) — every audit event must be hash-chained to the prior
+    event for the tenant. A broken chain means an event was deleted,
+    mutated, or reordered. Surface as a preflight check so the city
+    attorney sees this fact before pilot go-live."""
+    report = verify_chain(tenant_id)
+    if not report["ok"]:
+        n = len(report["breaks"])
+        first = report["breaks"][0]
+        return Check(
+            id="audit_chain_integrity",
+            label="Audit chain integrity (§13663(c))",
+            statute_ref="§13663(c)",
+            passed=False,
+            detail=(
+                f"{n} chain break(s) detected in {report['event_count']} events. "
+                f"First break at sequence {first['sequence']}: {first['detail']}"
+            ),
+        )
+    return Check(
+        id="audit_chain_integrity",
+        label="Audit chain integrity (§13663(c))",
+        statute_ref="§13663(c)",
+        passed=True,
+        detail=(
+            f"{report['event_count']} events chained · tip hash "
+            f"{report['tip_hash'][:12]}…"
+        ),
+    )
+
+
 def _check_policy_template_present() -> Check:
     # The agency policy template is a deliverable that ships with the
     # deployment; if it's missing, the agency has nothing to point to for
@@ -209,6 +241,24 @@ def _check_policy_template_present() -> Check:
     )
 
 
+@router.get("/audit-chain")
+@require_perm("audit.read")
+def audit_chain(user: CurrentUser = Depends(current_user)):
+    """Full audit-chain verification report — walks every event in
+    sequence order, recomputes hashes, lists any breaks. Heavier than
+    the preflight summary; use when investigating a tamper signal."""
+    return verify_chain(user.tenant_id)
+
+
+@router.post("/audit-chain/rechain")
+@require_perm("roles.manage")
+def audit_chain_rechain(user: CurrentUser = Depends(current_user)):
+    """Wipe + re-stamp the entire audit chain. Admin-only repair tool —
+    use when the canonical hash function changed (kit upgrade) or when
+    a verifiable break needs to be cleared after evidence review."""
+    return rechain_all(user.tenant_id)
+
+
 @router.get("/preflight")
 @require_perm("admin.view")
 def preflight(user: CurrentUser = Depends(current_user)):
@@ -222,6 +272,7 @@ def preflight(user: CurrentUser = Depends(current_user)):
         _check_retention_scheduler(),
         _check_vendor_scope_module(),
         _check_policy_template_present(),
+        _check_audit_chain_integrity(user.tenant_id),
     ]
     ready = all(c.passed for c in checks)
     return {

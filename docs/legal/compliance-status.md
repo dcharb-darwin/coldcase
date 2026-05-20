@@ -79,7 +79,7 @@ Legend: **✅ Shipped & verified** · **🟡 Shipped, not pilot-hardened** · **
 - **(c)(2) — video / audio footage:**
   - `MediaInput` entity exists, is linked to the originating Conversation and to the Report.
   - Chain PDF includes a media inventory section listing every media item that was in context for any message in the chain.
-- **Hash integrity:** each audit event chains via `prev_event_hash` (Merkle-style) so tampering is detectable. The chain PDF prints the running hash on the last page so a city attorney can verify it months later.
+- **Hash integrity (real, verified 2026-05-20):** each audit event carries `sequence` (monotonic per tenant, unique-indexed), `prev_event_hash`, and `event_hash` = sha256(prev_event_hash || canonical(this)). Genesis events use `prev_event_hash = "0" × 64`. `services/audit_chain.py:verify_chain` walks the chain and reports every kind of break (sequence gap, prev-hash mismatch, recomputed-hash mismatch). Exposed via `GET /admin/compliance/audit-chain` for the city attorney + a passing/failing line item on the deployment preflight (`audit_chain_integrity`). Repair tool at `POST /admin/compliance/audit-chain/rechain` is admin-only; use only after evidence review. Verified live: tampering one row's `summary` was caught at the exact sequence on the next verify call.
 
 ### Req 6 — Vendor restrictions
 

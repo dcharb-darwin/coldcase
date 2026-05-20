@@ -178,7 +178,13 @@ def seed_tag_vocabulary(tenant_id: str) -> int:
 
 
 def seed_all(tenant_id: str, dev_user_id: str, app_id: str) -> dict:
+    # Audit-chain backfill is done first so any audit events the rest of
+    # this function emits (none today, but defensively) land on a chain
+    # that's already aware of the historical events.
+    from services.audit_chain import backfill_chain
+
     return {
+        "audit_chain_backfill": backfill_chain(tenant_id),
         "dev_admin_assignment_created": seed_dev_admin_assignment(
             tenant_id, dev_user_id, app_id
         ),

@@ -25,7 +25,9 @@ PRE=$(curl -s "$API/admin/compliance/preflight")
 READY=$(echo "$PRE" | j "['ready']")
 if [ "$READY" = "True" ]; then pass "preflight ready=true"; else fail "preflight ready=$READY"; fi
 N_CHECKS=$(echo "$PRE" | j "['checks'].__len__()")
-[ "$N_CHECKS" = "6" ] && pass "6 checks present" || fail "expected 6 checks, got $N_CHECKS"
+# 7 checks today: auth bypass, llm model, agency letterhead, retention scheduler,
+# vendor scope, policy template, audit chain integrity. Update when adding more.
+[ "$N_CHECKS" -ge "7" ] && pass "$N_CHECKS preflight checks present" || fail "expected ≥7 checks, got $N_CHECKS"
 
 echo
 echo "── 2. Create case + conversation + message"
