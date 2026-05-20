@@ -18,11 +18,13 @@ from pydantic import BaseModel, Field
 
 from models import (
     Case, Document, Message, Tag, TagAssignment, TagKind, TagSubjectKind,
-    TAG_COLOR_CHOICES,
+    Provenance, ProvenanceSource, TAG_COLOR_CHOICES,
 )
+from models.audit_event import AuditEventType
 from models.report import Report
 from providers.llm import get_llm_provider
 from routers._deps import CurrentUser, current_user, require_perm
+from services import case_audit
 from services.document_text import extract_text
 from services.vendor_scope import enforce_vendor_scope
 
@@ -115,12 +117,23 @@ def _ensure_subject_in_tenant(
     return None, f"Unknown subject_kind {subject_kind!r}"
 
 
+class AssignTagBody(BaseModel):
+    """Optional body on the assign endpoint. Manual chip clicks omit it
+    entirely; the accept-from-AI path passes provenance so the chain
+    records which tags came from a model proposal."""
+    source: ProvenanceSource = ProvenanceSource.MANUAL
+    suggested_by_model: str = ""
+    suggested_rationale: str = ""
+
+
 @router.post("/tags/{tag_id}/assign/{subject_kind}/{subject_id}", status_code=201)
 @require_perm("case.edit")
 def assign_tag(
     tag_id: str, subject_kind: str, subject_id: str,
+    body: AssignTagBody | None = None,
     user: CurrentUser = Depends(current_user),
 ):
+    body = body or AssignTagBody()
     tag = Tag.objects(id=tag_id, tenant_id=user.tenant_id).first()
     if not tag:
         raise HTTPException(404, "Tag not found")
@@ -144,12 +157,38 @@ def assign_tag(
     if existing:
         return existing.to_dict()
 
+    now = datetime.utcnow()
+    is_ai = body.source == ProvenanceSource.AI_SUGGESTED
+    prov = Provenance(
+        source=body.source.value,
+        suggested_by_model=body.suggested_by_model.strip() if is_ai else "",
+        suggested_rationale=body.suggested_rationale.strip() if is_ai else "",
+        accepted_at=now if is_ai else None,
+        accepted_by=user.user_id if is_ai else "",
+    )
     ta = TagAssignment(
         tenant_id=user.tenant_id, tag_id=tag_id,
         subject_kind=subject_kind, subject_id=subject_id,
         case_id=case_id,
         applied_by=user.user_id,
+        provenance=prov,
     ).save()
+
+    if is_ai:
+        case_audit.log_user_event(
+            user,
+            event_type=AuditEventType.TAG_ACCEPTED_FROM_AI,
+            case_id=case_id,
+            summary=f"Accepted AI-suggested tag #{tag.slug} on {subject_kind}",
+            detail={
+                "tag_id": tag_id,
+                "tag_slug": tag.slug,
+                "subject_kind": subject_kind,
+                "subject_id": subject_id,
+                "model": prov.suggested_by_model,
+                "rationale": prov.suggested_rationale,
+            },
+        )
     # Touch the case's last-activity so the dashboard reflects the tag.
     if case_id:
         Case.objects(id=case_id).update_one(set__last_activity_at=datetime.utcnow())

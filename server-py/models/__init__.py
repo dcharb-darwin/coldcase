@@ -12,7 +12,7 @@ from models.vendor_access import (
     VendorAccessRequest, VendorAccessPurpose, VendorAccessScopeKind, VendorAccessStatus,
 )
 from models.tag import Tag, TagAssignment, TagKind, TagSubjectKind, TAG_COLOR_CHOICES
-from models.person import Person, PersonRole
+from models.person import Person, PersonRole, Provenance, ProvenanceSource
 from models.timeline_entry import TimelineEntry, TimelineEntrySource
 from models.note import Note, NoteSubjectKind
 
@@ -27,7 +27,7 @@ __all__ = [
     "AuditEvent", "AuditEventType",
     "VendorAccessRequest", "VendorAccessPurpose", "VendorAccessScopeKind", "VendorAccessStatus",
     "Tag", "TagAssignment", "TagKind", "TagSubjectKind", "TAG_COLOR_CHOICES",
-    "Person", "PersonRole",
+    "Person", "PersonRole", "Provenance", "ProvenanceSource",
     "TimelineEntry", "TimelineEntrySource",
     "Note", "NoteSubjectKind",
 ]

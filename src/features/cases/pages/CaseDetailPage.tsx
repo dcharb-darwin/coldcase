@@ -13,6 +13,7 @@ import {
   deletePerson,
   deleteTimelineEntry,
   getAuditChainReport,
+  getCaseConnections,
   getReportChain,
   listAuditEvents,
   listConversations,
@@ -470,6 +471,8 @@ function BriefTab({
           </div>
         </section>
 
+        <CaseConnectionsPanel caseId={c.id} />
+
         {/* Tags — grouped (detective-applied + server-derived) with an
             inline AI suggestion affordance. */}
         <section>
@@ -545,8 +548,15 @@ function TagSuggestions({ caseId }: { caseId: string }) {
   // query is still cached.
   const [dismissed, setDismissed] = useState<Set<string>>(new Set());
 
+  // AI accept threads the model id + rationale into the assignment so the
+  // chain records "this tag came from an LLM proposal that the officer
+  // explicitly accepted" — not "officer applied this manually".
   const acceptMut = useMutation({
-    mutationFn: (tagId: string) => assignTag(tagId, "case", caseId),
+    mutationFn: (s: TagSuggestion) => assignTag(s.tag.id, "case", caseId, {
+      source: "ai_suggested",
+      suggested_by_model: data?.model ?? "",
+      suggested_rationale: s.rationale,
+    }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: caseKeys.tags(caseId) });
       qc.invalidateQueries({ queryKey: caseKeys.detail(caseId) });
@@ -589,7 +599,7 @@ function TagSuggestions({ caseId }: { caseId: string }) {
       {visible.length > 0 ? (
         <ul className="space-y-1.5 mt-1">
           {visible.map((s: TagSuggestion) => {
-            const accepted = acceptMut.isSuccess && acceptMut.variables === s.tag.id;
+            const accepted = acceptMut.isSuccess && acceptMut.variables?.tag.id === s.tag.id;
             return (
               <li
                 key={s.tag.slug}
@@ -605,7 +615,7 @@ function TagSuggestions({ caseId }: { caseId: string }) {
                   <button
                     type="button"
                     disabled={accepted || acceptMut.isPending}
-                    onClick={() => acceptMut.mutate(s.tag.id)}
+                    onClick={() => acceptMut.mutate(s)}
                     className="px-2 py-0.5 text-[11px] rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
                   >
                     {accepted ? "Added ✓" : "Accept"}
@@ -921,6 +931,101 @@ function NextStepSuggester({ caseId }: { caseId: string }) {
   );
 }
 
+function CaseConnectionsPanel({ caseId }: { caseId: string }) {
+  // Derived graph: shows every person on this case + which other cases
+  // they appear on. Not a fancy node-link visualization yet — that lands
+  // when there's enough cross-case data to make it pay off. For now, a
+  // structured list with click-through to the connected cases.
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["case-connections", caseId],
+    queryFn: () => getCaseConnections(caseId),
+    staleTime: 60_000,
+  });
+
+  if (isLoading || error || !data) return null;
+
+  // Group cross-case edges by source person.
+  const otherCasesById = new Map(
+    data.nodes
+      .filter((n) => n.kind === "case" && n.id !== `case:${caseId}`)
+      .map((n) => [n.id, n]),
+  );
+  const personRows = data.nodes
+    .filter((n) => n.kind === "person")
+    .map((p) => {
+      const targets = data.edges
+        .filter((e) => e.from === p.id && e.kind === "appears_on_other_case")
+        .map((e) => otherCasesById.get(e.to))
+        .filter((c): c is NonNullable<typeof c> => Boolean(c));
+      return { person: p, targets };
+    });
+
+  // Only render the section if there's something to show.
+  if (personRows.length === 0) return null;
+
+  const hasAnyCrossCase = personRows.some((r) => r.targets.length > 0);
+
+  return (
+    <section>
+      <div className="flex items-baseline justify-between mb-2">
+        <h2 className="text-[15px] font-semibold text-slate-900">Connections</h2>
+        <span className="text-[11px] text-slate-500">
+          {data.stats.persons_on_case} people · {data.stats.connected_cases} connected case
+          {data.stats.connected_cases === 1 ? "" : "s"}
+        </span>
+      </div>
+      {!hasAnyCrossCase ? (
+        <div className="text-xs text-slate-500 italic">
+          No cross-case overlap yet. As people are added to other cases,
+          their connections will appear here automatically.
+        </div>
+      ) : (
+        <ul className="space-y-2">
+          {personRows.filter((r) => r.targets.length > 0).map(({ person, targets }) => (
+            <li key={person.id} className="border border-slate-200 rounded p-2.5 bg-white">
+              <div className="flex items-baseline gap-2">
+                <span className="font-medium text-slate-900">{person.name}</span>
+                <span className="text-[11px] text-slate-500 capitalize">
+                  ({person.role?.replace("_", " ")})
+                </span>
+                {person.ai_sourced ? (
+                  <span className="inline-flex items-center px-1.5 py-0.5 rounded-full border border-purple-200 bg-purple-50 text-purple-800 text-[10px] uppercase tracking-wide font-medium">
+                    AI
+                  </span>
+                ) : null}
+              </div>
+              <ul className="mt-1.5 space-y-1">
+                {targets.map((c) => (
+                  <li key={c.id}>
+                    <button
+                      type="button"
+                      onClick={() => setHashPath(`${ROUTES.casePrefix}${c.case_id}`)}
+                      className="w-full text-left flex items-baseline gap-2 px-2 py-1 rounded hover:bg-slate-50"
+                    >
+                      <span className="text-purple-700">↗</span>
+                      <span className="font-mono text-xs text-slate-700">{c.case_number}</span>
+                      <span className="text-sm text-slate-900 truncate flex-1">{c.case_title}</span>
+                      {c.case_classification === "homicide" || c.case_classification === "sexual_assault" ? (
+                        <span className="text-[11px] text-red-700 font-medium capitalize">
+                          {c.case_classification?.replace("_", " ")}
+                        </span>
+                      ) : (
+                        <span className="text-[11px] text-slate-500 capitalize">
+                          {c.case_classification?.replace("_", " ")}
+                        </span>
+                      )}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 function PersonElsewhere({ name, excludeCaseId }: { name: string; excludeCaseId: string }) {
   // Quiet by default — only renders something when there's a real cross-case
   // hit. No "loading" or "no matches" affordance; this is contextual hint,
@@ -993,9 +1098,14 @@ function PersonSuggestions({ caseId }: { caseId: string }) {
   const [dismissed, setDismissed] = useState<Set<string>>(new Set());
 
   const acceptMut = useMutation({
+    // Rationale + model land in `provenance`, not in the detective's
+    // `notes` field. Leaves `notes` clean for the officer's own context.
     mutationFn: (s: PersonSuggestion) => createPerson(caseId, {
       name: s.name, role: s.role, descriptor: s.descriptor,
-      notes: s.rationale ? `Suggested by AI · ${s.rationale}` : "",
+      notes: "",
+      source: "ai_suggested",
+      suggested_by_model: data?.model ?? "",
+      suggested_rationale: s.rationale,
     }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["case-persons", caseId] });
@@ -1239,6 +1349,17 @@ function PeopleTab({ caseId }: { caseId: string }) {
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2 flex-wrap">
                             <span className="font-medium text-slate-900">{p.name}</span>
+                            {p.provenance?.source === "ai_suggested" ? (
+                              <span
+                                className="inline-flex items-center px-1.5 py-0.5 rounded-full border border-purple-200 bg-purple-50 text-purple-800 text-[10px] uppercase tracking-wide font-medium"
+                                title={
+                                  `Accepted from AI suggestion${p.provenance.suggested_by_model ? ` · ${p.provenance.suggested_by_model}` : ""}`
+                                  + (p.provenance.suggested_rationale ? `\n\n${p.provenance.suggested_rationale}` : "")
+                                }
+                              >
+                                AI
+                              </span>
+                            ) : null}
                             <PersonElsewhere name={p.name} excludeCaseId={caseId} />
                           </div>
                           {p.descriptor ? (
@@ -1246,6 +1367,11 @@ function PeopleTab({ caseId }: { caseId: string }) {
                           ) : null}
                           {p.notes ? (
                             <div className="text-xs text-slate-500 mt-1 whitespace-pre-wrap leading-relaxed">{p.notes}</div>
+                          ) : null}
+                          {p.provenance?.source === "ai_suggested" && p.provenance.suggested_rationale ? (
+                            <div className="text-[11px] text-purple-700 italic mt-1 leading-snug">
+                              {p.provenance.suggested_rationale}
+                            </div>
                           ) : null}
                         </div>
                         <button

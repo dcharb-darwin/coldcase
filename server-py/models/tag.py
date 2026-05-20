@@ -21,8 +21,11 @@ from datetime import datetime
 from enum import Enum
 
 from mongoengine import (
-    Document as MEDocument, StringField, DateTimeField, ListField,
+    Document as MEDocument, EmbeddedDocumentField,
+    StringField, DateTimeField, ListField,
 )
+
+from models.person import Provenance
 
 
 class TagKind(str, Enum):
@@ -122,6 +125,10 @@ class TagAssignment(MEDocument):
     applied_by = StringField(required=True)
     applied_at = DateTimeField(default=datetime.utcnow)
 
+    # Provenance — same shape Person uses. Manual application defaults
+    # source=manual; the AI-suggestion accept path populates the full block.
+    provenance = EmbeddedDocumentField(Provenance, default=Provenance)
+
     def to_dict(self) -> dict:
         return {
             "id": str(self.id),
@@ -131,4 +138,5 @@ class TagAssignment(MEDocument):
             "case_id": self.case_id,
             "applied_by": self.applied_by,
             "applied_at": self.applied_at.isoformat() if self.applied_at else None,
+            "provenance": (self.provenance.to_dict() if self.provenance else None),
         }

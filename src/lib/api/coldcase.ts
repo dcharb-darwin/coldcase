@@ -252,6 +252,7 @@ export interface TagAssignment {
   case_id: string | null;
   applied_by: string;
   applied_at: string | null;
+  provenance?: Provenance | null;
 }
 
 export interface CaseTagAssignment extends TagAssignment {
@@ -270,13 +271,31 @@ export async function listCaseTags(caseId: string): Promise<CaseTagAssignment[]>
   return data.assignments;
 }
 
+export type ProvenanceSource = "manual" | "ai_suggested";
+
+export interface Provenance {
+  source: ProvenanceSource;
+  suggested_by_model: string;
+  suggested_rationale: string;
+  accepted_at: string | null;
+  accepted_by: string;
+}
+
+export interface AssignTagOptions {
+  source?: ProvenanceSource;
+  suggested_by_model?: string;
+  suggested_rationale?: string;
+}
+
 export async function assignTag(
   tagId: string,
   subjectKind: TagSubjectKind,
   subjectId: string,
+  options?: AssignTagOptions,
 ): Promise<TagAssignment> {
   const { data } = await http.post<TagAssignment>(
     `/tags/${tagId}/assign/${subjectKind}/${subjectId}`,
+    options,
   );
   return data;
 }
@@ -318,6 +337,7 @@ export interface Person {
   notes: string;
   created_by: string;
   created_at: string | null;
+  provenance?: Provenance | null;
 }
 
 export async function listPersons(caseId: string): Promise<Person[]> {
@@ -330,6 +350,9 @@ export async function createPerson(caseId: string, body: {
   role?: PersonRole;
   descriptor?: string;
   notes?: string;
+  source?: ProvenanceSource;
+  suggested_by_model?: string;
+  suggested_rationale?: string;
 }): Promise<Person> {
   const { data } = await http.post<Person>(`/cases/${caseId}/persons`, body);
   return data;
@@ -375,6 +398,48 @@ export async function searchPersons(
   const { data } = await http.get<{ matches: PersonMatch[]; normalized: string }>(
     "/persons/search", { params },
   );
+  return data;
+}
+
+// ── Case connections graph (derived) ─────────────────────────────────────
+
+export interface ConnectionNode {
+  id: string;
+  kind: "case" | "person";
+  // case fields
+  case_id?: string;
+  case_number?: string;
+  case_title?: string;
+  case_classification?: string;
+  focal?: boolean;
+  // person fields
+  person_id?: string;
+  name?: string;
+  role?: PersonRole;
+  descriptor?: string;
+  ai_sourced?: boolean;
+}
+
+export interface ConnectionEdge {
+  from: string;
+  to: string;
+  kind: "on_case" | "appears_on_other_case";
+  other_role?: PersonRole;
+}
+
+export interface CaseConnections {
+  case_id: string;
+  nodes: ConnectionNode[];
+  edges: ConnectionEdge[];
+  stats: {
+    persons_on_case: number;
+    connected_cases: number;
+    cross_case_edges: number;
+  };
+}
+
+export async function getCaseConnections(caseId: string): Promise<CaseConnections> {
+  const { data } = await http.get<CaseConnections>(`/cases/${caseId}/connections`);
   return data;
 }
 

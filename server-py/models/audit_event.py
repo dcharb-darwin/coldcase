@@ -46,6 +46,12 @@ class AuditEventType(str, Enum):
     PURGE_BLOCKED = "purge.blocked"             # §13663(b) refused a purge
     FIRST_DRAFT_MUTATION_BLOCKED = "first_draft.mutation_blocked"
     RETENTION_SWEEP_COMPLETED = "retention.sweep_completed"
+    # AI-suggestion lineage. Distinct from `case.updated` so the city
+    # attorney can answer "which artifacts on this case came from AI?"
+    # without parsing detail blobs.
+    PERSON_ACCEPTED_FROM_AI = "person.accepted_from_ai"
+    TAG_ACCEPTED_FROM_AI = "tag.accepted_from_ai"
+    NEXT_STEP_ACCEPTED_FROM_AI = "next_step.accepted_from_ai"
 
 
 class AuditEvent(MEDocument):

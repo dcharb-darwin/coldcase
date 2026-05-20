@@ -16,9 +16,16 @@ from pydantic import BaseModel, Field
 
 import re as _re
 
-from models import Case, Document, Person, PersonRole
+from datetime import datetime as _datetime
+
+from models import (
+    Case, Document, Person, PersonRole,
+    Provenance, ProvenanceSource,
+)
+from models.audit_event import AuditEventType
 from providers.llm import get_llm_provider
 from routers._deps import CurrentUser, current_user, require_perm
+from services import case_audit
 from services.document_text import extract_text
 from services.vendor_scope import enforce_vendor_scope
 
@@ -51,6 +58,12 @@ class CreatePersonBody(BaseModel):
     role: PersonRole = PersonRole.OTHER
     descriptor: str = ""
     notes: str = ""
+    # AI-suggestion lineage. Manual creates omit these; the accept-from-AI
+    # path passes ai_suggested + model + rationale so the chain records
+    # which artifacts came from an LLM proposal that the officer accepted.
+    source: ProvenanceSource = ProvenanceSource.MANUAL
+    suggested_by_model: str = ""
+    suggested_rationale: str = ""
 
 
 class UpdatePersonBody(BaseModel):
@@ -76,6 +89,15 @@ def create_person(case_id: str, body: CreatePersonBody, user: CurrentUser = Depe
     case = Case.objects(id=case_id, tenant_id=user.tenant_id).first()
     if not case:
         raise HTTPException(404, "Case not found")
+    now = _datetime.utcnow()
+    is_ai = body.source == ProvenanceSource.AI_SUGGESTED
+    prov = Provenance(
+        source=body.source.value,
+        suggested_by_model=body.suggested_by_model.strip() if is_ai else "",
+        suggested_rationale=body.suggested_rationale.strip() if is_ai else "",
+        accepted_at=now if is_ai else None,
+        accepted_by=user.user_id if is_ai else "",
+    )
     p = Person(
         tenant_id=user.tenant_id, case=case,
         name=body.name.strip(),
@@ -83,7 +105,25 @@ def create_person(case_id: str, body: CreatePersonBody, user: CurrentUser = Depe
         descriptor=body.descriptor.strip(),
         notes=body.notes.strip(),
         created_by=user.user_id,
+        provenance=prov,
     ).save()
+
+    if is_ai:
+        # Separate audit event so the chain answers "what came from AI"
+        # without parsing detail blobs.
+        case_audit.log_user_event(
+            user,
+            event_type=AuditEventType.PERSON_ACCEPTED_FROM_AI,
+            case_id=case_id,
+            summary=f"Accepted AI-suggested person {p.name!r} ({p.role}) onto case",
+            detail={
+                "person_id": str(p.id),
+                "name": p.name,
+                "role": p.role,
+                "model": prov.suggested_by_model,
+                "rationale": prov.suggested_rationale,
+            },
+        )
     return p.to_dict()
 
 
@@ -106,6 +146,105 @@ def update_person(
         p.notes = body.notes.strip()
     p.save()
     return p.to_dict()
+
+
+# ── Case connections graph ─────────────────────────────────────────────────
+
+
+@router.get("/cases/{case_id}/connections")
+@require_perm("case.read")
+def case_connections(case_id: str, user: CurrentUser = Depends(current_user)):
+    """Derived graph view: nodes = (this case, every person on this case,
+    every other case where one of those people also appears). Edges =
+    (person-on-this-case, person-on-other-case). Computed lazily — no
+    new persistence — so the graph is always in sync with the underlying
+    Person rows.
+
+    Pragmatic for a single-tenant cold-case shop (<1000 persons). When
+    that scales, persist edges and update them on Person create/update.
+    """
+    case = Case.objects(id=case_id, tenant_id=user.tenant_id).first()
+    if not case:
+        raise HTTPException(404, "Case not found")
+
+    persons_on_case = list(Person.objects(tenant_id=user.tenant_id, case=case))
+
+    # Build normalized-name → list of (case, role, descriptor) across the
+    # tenant once; then look up each person on the focal case in O(1).
+    all_persons = list(
+        Person.objects(tenant_id=user.tenant_id).only(
+            "name", "role", "descriptor", "case",
+        )
+    )
+    by_norm: dict[str, list] = {}
+    for p in all_persons:
+        if not p.case:
+            continue
+        by_norm.setdefault(_normalize_name(p.name), []).append(p)
+
+    nodes: list[dict] = [{
+        "id": f"case:{case_id}",
+        "kind": "case",
+        "case_id": case_id,
+        "case_number": case.case_number,
+        "case_title": case.title,
+        "case_classification": case.classification,
+        "focal": True,
+    }]
+    edges: list[dict] = []
+    other_case_ids: set[str] = set()
+
+    for p in persons_on_case:
+        pnode_id = f"person:{p.id}"
+        nodes.append({
+            "id": pnode_id,
+            "kind": "person",
+            "person_id": str(p.id),
+            "name": p.name,
+            "role": p.role,
+            "descriptor": p.descriptor,
+            "ai_sourced": bool(p.provenance and p.provenance.source == "ai_suggested"),
+        })
+        edges.append({"from": f"case:{case_id}", "to": pnode_id, "kind": "on_case"})
+
+        # Cross-case edges: every other Person row with the same normalized
+        # name on a different case. One edge per unique other case.
+        seen_other_cases: set[str] = set()
+        for sib in by_norm.get(_normalize_name(p.name), []):
+            ocid = str(sib.case.id)
+            if ocid == case_id or ocid in seen_other_cases:
+                continue
+            seen_other_cases.add(ocid)
+            other_case_ids.add(ocid)
+            edges.append({
+                "from": pnode_id,
+                "to": f"case:{ocid}",
+                "kind": "appears_on_other_case",
+                "other_role": sib.role,
+            })
+
+    # Hydrate the other-case nodes with their human-facing fields.
+    for c in Case.objects(tenant_id=user.tenant_id, id__in=list(other_case_ids)):
+        nodes.append({
+            "id": f"case:{c.id}",
+            "kind": "case",
+            "case_id": str(c.id),
+            "case_number": c.case_number,
+            "case_title": c.title,
+            "case_classification": c.classification,
+            "focal": False,
+        })
+
+    return {
+        "case_id": case_id,
+        "nodes": nodes,
+        "edges": edges,
+        "stats": {
+            "persons_on_case": len(persons_on_case),
+            "connected_cases": len(other_case_ids),
+            "cross_case_edges": sum(1 for e in edges if e["kind"] == "appears_on_other_case"),
+        },
+    }
 
 
 # ── Cross-case lookup ──────────────────────────────────────────────────────
