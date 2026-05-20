@@ -202,6 +202,28 @@ export async function getCompliancePreflight(): Promise<CompliancePreflight> {
   return data;
 }
 
+export interface AuditChainBreak {
+  sequence: number;
+  index: number;
+  kind: "sequence_gap" | "prev_hash_mismatch" | "event_hash_mismatch";
+  detail: string;
+  event_id: string;
+}
+
+export interface AuditChainReport {
+  tenant_id: string;
+  ok: boolean;
+  event_count: number;
+  pre_chain_event_count: number;
+  tip_hash: string;
+  breaks: AuditChainBreak[];
+}
+
+export async function getAuditChainReport(): Promise<AuditChainReport> {
+  const { data } = await http.get<AuditChainReport>("/admin/compliance/audit-chain");
+  return data;
+}
+
 // ── Tags ─────────────────────────────────────────────────────────────────
 
 export type TagKind = "system" | "user";
@@ -333,6 +355,29 @@ export async function suggestCasePersons(caseId: string): Promise<{
   return data;
 }
 
+export interface PersonMatch {
+  case_id: string;
+  case_number: string;
+  case_title: string;
+  case_classification: string;
+  person_id: string;
+  name: string;
+  role: PersonRole;
+  descriptor: string;
+}
+
+export async function searchPersons(
+  name: string,
+  opts?: { excludeCaseId?: string },
+): Promise<{ matches: PersonMatch[]; normalized: string }> {
+  const params: Record<string, string> = { name };
+  if (opts?.excludeCaseId) params.exclude_case_id = opts.excludeCaseId;
+  const { data } = await http.get<{ matches: PersonMatch[]; normalized: string }>(
+    "/persons/search", { params },
+  );
+  return data;
+}
+
 // ── Timeline entries (detective-curated dated case events) ───────────────
 
 export type TimelineEntrySource = "manual" | "ai_suggested";
@@ -389,6 +434,53 @@ export async function suggestTimelineEntries(caseId: string): Promise<{
 }> {
   const { data } = await http.post(`/cases/${caseId}/timeline-entries/suggestions`);
   return data;
+}
+
+// ── Notes (detective freeform scratch) ───────────────────────────────────
+
+export type NoteSubjectKind = "case" | "document" | "report";
+
+export interface Note {
+  id: string;
+  case_id: string;
+  subject_kind: NoteSubjectKind;
+  subject_id: string;
+  body: string;
+  created_by: string;
+  created_at: string | null;
+  updated_by: string;
+  updated_at: string | null;
+}
+
+export async function listNotes(
+  caseId: string,
+  filter?: { subjectKind?: NoteSubjectKind; subjectId?: string },
+): Promise<Note[]> {
+  const params: Record<string, string> = {};
+  if (filter?.subjectKind) params.subject_kind = filter.subjectKind;
+  if (filter?.subjectId) params.subject_id = filter.subjectId;
+  const { data } = await http.get<{ notes: Note[] }>(
+    `/cases/${caseId}/notes`, { params },
+  );
+  return data.notes;
+}
+
+export async function createNote(caseId: string, body: {
+  subject_kind: NoteSubjectKind;
+  subject_id: string;
+  body: string;
+}): Promise<Note> {
+  const { data } = await http.post<Note>(`/cases/${caseId}/notes`, body);
+  return data;
+}
+
+export async function updateNote(caseId: string, noteId: string, body: string): Promise<Note> {
+  const { data } = await http.patch<Note>(`/cases/${caseId}/notes/${noteId}`, { body });
+  return data;
+}
+
+export async function deleteNote(caseId: string, noteId: string): Promise<void> {
+  await http.delete(`/cases/${caseId}/notes/${noteId}`);
 }
 
 export async function getCase(id: string): Promise<{

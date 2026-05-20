@@ -11,6 +11,7 @@ import {
   createTimelineEntry,
   deletePerson,
   deleteTimelineEntry,
+  getAuditChainReport,
   getReportChain,
   listAuditEvents,
   listConversations,
@@ -18,6 +19,7 @@ import {
   listPromptSuggestions,
   listReportsForCase,
   listTimelineEntries,
+  searchPersons,
   suggestCasePersons,
   suggestCaseTags,
   suggestTimelineEntries,
@@ -42,6 +44,7 @@ import {
 } from "@/lib/api/coldcase";
 import { caseKeys } from "../queryKeys";
 import ChatPanel from "../components/ChatPanel";
+import NotesPanel from "../components/NotesPanel";
 import ReportDrawer from "../components/ReportDrawer";
 import { CaseTagBar, TagChip } from "../components/TagChips";
 import { parseHashQuery, reportRoute, ROUTES, setHashPath } from "@/shell/routes";
@@ -485,6 +488,12 @@ function BriefTab({
           </div>
         </section>
 
+        {/* Detective scratch — freeform notes that don't enter the §13663
+            chain or any export. Separate from the closed-vocab tag set. */}
+        <section className="border border-slate-200 rounded p-3 bg-slate-50/30">
+          <NotesPanel caseId={c.id} subjectKind="case" subjectId={c.id} />
+        </section>
+
         {/* Identifiers — for evidence.com / records management exports. */}
         <section>
           <h2 className="text-[15px] font-semibold text-slate-900 mb-3">Identifiers</h2>
@@ -789,6 +798,66 @@ const PERSON_ROLES: { value: PersonRole; label: string; color: string }[] = [
   { value: "other",              label: "Other",              color: "bg-slate-100 text-slate-700 border-slate-300" },
 ];
 
+function PersonElsewhere({ name, excludeCaseId }: { name: string; excludeCaseId: string }) {
+  // Quiet by default — only renders something when there's a real cross-case
+  // hit. No "loading" or "no matches" affordance; this is contextual hint,
+  // not a primary action.
+  const [open, setOpen] = useState(false);
+  const { data } = useQuery({
+    queryKey: ["person-elsewhere", name, excludeCaseId],
+    queryFn: () => searchPersons(name, { excludeCaseId }),
+    staleTime: 60_000,
+    // Skip very short names — 1-2 chars matches too much, not useful.
+    enabled: name.trim().length >= 3,
+  });
+  const matches = data?.matches ?? [];
+  if (matches.length === 0) return null;
+
+  return (
+    <span className="relative inline-block">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full border border-purple-200 bg-purple-50 text-purple-800 text-[11px] hover:bg-purple-100"
+        title={`Appears as a Person on ${matches.length} other case${matches.length === 1 ? "" : "s"}`}
+      >
+        ↗ {matches.length} other case{matches.length === 1 ? "" : "s"}
+      </button>
+      {open ? (
+        <span
+          className="absolute left-0 top-full mt-1 z-20 bg-white border border-slate-200 rounded shadow-lg min-w-[280px] max-w-[420px]"
+          // Close on click-outside is handled by the page click bubbling
+          // through; toggling the button itself closes too.
+        >
+          <ul className="py-1">
+            {matches.map((m) => (
+              <li key={m.case_id}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpen(false);
+                    setHashPath(`${ROUTES.casePrefix}${m.case_id}`);
+                  }}
+                  className="w-full text-left px-3 py-1.5 hover:bg-slate-50 block"
+                >
+                  <div className="flex items-baseline gap-2">
+                    <span className="font-mono text-xs text-slate-700">{m.case_number}</span>
+                    <span className="text-[11px] text-slate-500 capitalize">{m.role.replace("_", " ")}</span>
+                  </div>
+                  <div className="text-xs text-slate-900 truncate">{m.case_title}</div>
+                  {m.descriptor ? (
+                    <div className="text-[11px] text-slate-500 truncate">{m.descriptor}</div>
+                  ) : null}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 function PersonSuggestions({ caseId }: { caseId: string }) {
   const qc = useQueryClient();
   const [run, setRun] = useState(false);
@@ -1045,7 +1114,10 @@ function PeopleTab({ caseId }: { caseId: string }) {
                     <li key={p.id} className="border border-slate-200 rounded p-2.5 bg-white hover:border-slate-300 group">
                       <div className="flex items-baseline justify-between gap-3">
                         <div className="min-w-0 flex-1">
-                          <div className="font-medium text-slate-900">{p.name}</div>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-medium text-slate-900">{p.name}</span>
+                            <PersonElsewhere name={p.name} excludeCaseId={caseId} />
+                          </div>
                           {p.descriptor ? (
                             <div className="text-xs text-slate-600 mt-0.5">{p.descriptor}</div>
                           ) : null}
@@ -1444,6 +1516,9 @@ function ChainTab({ caseId, reports }: { caseId: string; reports: Report[] }) {
           </p>
         </header>
 
+        <ChainIntegrityCard />
+
+
         {signed.length === 0 ? (
           <div className="border border-dashed border-slate-300 rounded p-8 text-center text-sm text-slate-500">
             No signed reports yet — chain-of-custody artifacts are generated
@@ -1475,6 +1550,95 @@ function ChainTab({ caseId, reports }: { caseId: string; reports: Report[] }) {
         </section>
       </div>
     </div>
+  );
+}
+
+function ChainIntegrityCard() {
+  // Per-tenant — all events are chained as one stream, not per-case.
+  // Shown on every case's Chain tab because that's where the city
+  // attorney looks first when investigating any single artifact's lineage.
+  const { data, isFetching, error, refetch } = useQuery({
+    queryKey: ["audit-chain-report"],
+    queryFn: getAuditChainReport,
+    staleTime: 30_000,
+  });
+
+  if (error) {
+    return (
+      <div className="border border-amber-200 bg-amber-50/60 rounded p-3 mb-4 text-sm text-amber-900">
+        Audit-chain verification unavailable: {(error as Error).message}
+      </div>
+    );
+  }
+
+  if (!data) {
+    return (
+      <div className="border border-slate-200 rounded p-3 mb-4 text-xs text-slate-500">
+        Verifying audit chain…
+      </div>
+    );
+  }
+
+  const toneCls = data.ok
+    ? "border-emerald-200 bg-emerald-50/40"
+    : "border-red-200 bg-red-50/40";
+  const iconCls = data.ok
+    ? "bg-emerald-600 text-white"
+    : "bg-red-600 text-white";
+
+  return (
+    <section className={`border rounded p-3 mb-4 ${toneCls}`}>
+      <div className="flex items-baseline gap-2">
+        <span
+          className={`shrink-0 w-5 h-5 flex items-center justify-center rounded-full text-xs font-bold ${iconCls}`}
+          aria-label={data.ok ? "Chain intact" : "Chain broken"}
+        >
+          {data.ok ? "✓" : "!"}
+        </span>
+        <div className="flex-1 min-w-0">
+          <div className="text-[13px] font-semibold text-slate-900">
+            {data.ok
+              ? "Audit chain intact"
+              : `Audit chain broken (${data.breaks.length} break${data.breaks.length === 1 ? "" : "s"})`}
+          </div>
+          <div className="text-[11px] text-slate-600 mt-0.5">
+            <span>{data.event_count} events chained</span>
+            {data.pre_chain_event_count > 0 ? (
+              <span className="ml-2 text-amber-700">
+                · {data.pre_chain_event_count} pre-chain (run rechain to integrate)
+              </span>
+            ) : null}
+            <span className="ml-2 font-mono text-slate-500">
+              tip {data.tip_hash.slice(0, 16)}…
+            </span>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => refetch()}
+          disabled={isFetching}
+          className="shrink-0 px-2 py-0.5 text-[11px] rounded border border-slate-300 bg-white hover:bg-slate-50 disabled:opacity-50"
+        >
+          {isFetching ? "Verifying…" : "Re-verify"}
+        </button>
+      </div>
+
+      {!data.ok && data.breaks.length > 0 ? (
+        <ul className="mt-2 pt-2 border-t border-red-200 space-y-1 text-[11px] text-red-900">
+          {data.breaks.slice(0, 5).map((b) => (
+            <li key={`${b.kind}-${b.event_id}`} className="flex items-baseline gap-2">
+              <span className="font-mono text-red-700">seq&nbsp;{b.sequence}</span>
+              <span>{b.detail}</span>
+            </li>
+          ))}
+          {data.breaks.length > 5 ? (
+            <li className="italic text-red-700">
+              + {data.breaks.length - 5} more — see full report at <code>/admin/compliance/audit-chain</code>.
+            </li>
+          ) : null}
+        </ul>
+      ) : null}
+    </section>
   );
 }
 

@@ -14,6 +14,8 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+import re as _re
+
 from models import Case, Document, Person, PersonRole
 from providers.llm import get_llm_provider
 from routers._deps import CurrentUser, current_user, require_perm
@@ -104,6 +106,77 @@ def update_person(
         p.notes = body.notes.strip()
     p.save()
     return p.to_dict()
+
+
+# ── Cross-case lookup ──────────────────────────────────────────────────────
+
+
+def _normalize_name(s: str) -> str:
+    """Loose normalisation for cross-case matching: lower, collapse spaces,
+    strip honorifics/punctuation. Catches "Dr. James M. Hinton" ≈
+    "James M Hinton" and "Hinton, James" written either way."""
+    s = s.strip().lower()
+    s = _re.sub(r"\b(dr|mr|mrs|ms|mx|prof|rev|sgt|det|capt|lt|hon)\.?\s+", "", s)
+    s = _re.sub(r"[^\w\s]+", " ", s)
+    s = _re.sub(r"\s+", " ", s)
+    return s.strip()
+
+
+@router.get("/persons/search")
+@require_perm("case.read")
+def search_persons(
+    name: str,
+    exclude_case_id: str | None = None,
+    user: CurrentUser = Depends(current_user),
+):
+    """Find Person rows across the tenant whose name fuzzy-matches `name`.
+
+    Real investigative value: if a witness on case A is named "James M.
+    Hinton" and the same name appears as a suspect on case B, the
+    detective should see that connection. The match is intentionally
+    loose — exact-case name matching would miss almost every real hit
+    (honorifics, middle initials, comma-flipped surnames).
+    """
+    if not name.strip():
+        raise HTTPException(422, "name is required")
+    target = _normalize_name(name)
+    if not target:
+        return {"matches": []}
+
+    # Tenant-wide scan. Person collections are typically small — sub-1000
+    # rows even for a busy agency — so a Python-side normalised compare
+    # beats trying to express the rules in a Mongo query.
+    matches: list[dict] = []
+    seen_case_ids: set[str] = set()
+    rows = Person.objects(tenant_id=user.tenant_id).only(
+        "name", "role", "descriptor", "case",
+    )
+    for p in rows:
+        if _normalize_name(p.name) != target:
+            continue
+        if not p.case:
+            continue
+        cid = str(p.case.id)
+        if exclude_case_id and cid == exclude_case_id:
+            continue
+        # One match per case — the user wants "this person appears in case
+        # X", not the cartesian product of every duplicate Person row.
+        if cid in seen_case_ids:
+            continue
+        seen_case_ids.add(cid)
+        case = p.case
+        matches.append({
+            "case_id": cid,
+            "case_number": case.case_number,
+            "case_title": case.title,
+            "case_classification": case.classification,
+            "person_id": str(p.id),
+            "name": p.name,
+            "role": p.role,
+            "descriptor": p.descriptor,
+        })
+
+    return {"matches": matches, "query": name, "normalized": target}
 
 
 @router.delete("/cases/{case_id}/persons/{person_id}", status_code=204)
