@@ -9,31 +9,49 @@ export const ROUTES = {
 } as const;
 
 export function isCaseListRoute(path: string): boolean {
-  return path === ROUTES.cases;
+  return stripHashQuery(path) === ROUTES.cases;
 }
 
 export function isCaseDetailRoute(path: string): boolean {
-  return path.startsWith(ROUTES.casePrefix);
+  return stripHashQuery(path).startsWith(ROUTES.casePrefix);
 }
 
 export function caseIdFromRoute(path: string): string | null {
   if (!isCaseDetailRoute(path)) return null;
-  return path.slice(ROUTES.casePrefix.length).split("/")[0] || null;
+  return stripHashQuery(path).slice(ROUTES.casePrefix.length).split("/")[0] || null;
 }
 
 /** `/cases/:caseId/reports/:reportId` — Phase A · PR 3 report workspace. */
 export function isReportDetailRoute(path: string): boolean {
-  return /^\/cases\/[^/]+\/reports\/[^/]+/.test(path);
+  return /^\/cases\/[^/?]+\/reports\/[^/?]+/.test(stripHashQuery(path));
 }
 
 export function reportRouteIds(path: string): { caseId: string; reportId: string } | null {
-  const m = path.match(/^\/cases\/([^/]+)\/reports\/([^/]+)/);
+  const m = stripHashQuery(path).match(/^\/cases\/([^/]+)\/reports\/([^/]+)/);
   if (!m) return null;
   return { caseId: m[1]!, reportId: m[2]! };
 }
 
 export function reportRoute(caseId: string, reportId: string): string {
   return `${ROUTES.casePrefix}${caseId}/reports/${reportId}`;
+}
+
+/** Parse `?k=v&k2=v2` from the end of a hash path. URLSearchParams ignores
+ *  the leading "?", and decodes percent-encoded values. Safe on paths
+ *  without a query string (returns an empty object). */
+export function parseHashQuery(path: string): Record<string, string> {
+  const qIdx = path.indexOf("?");
+  if (qIdx < 0) return {};
+  const params = new URLSearchParams(path.slice(qIdx + 1));
+  const out: Record<string, string> = {};
+  params.forEach((v, k) => { out[k] = v; });
+  return out;
+}
+
+/** Path without the query suffix — for the case-id parser etc. */
+export function stripHashQuery(path: string): string {
+  const qIdx = path.indexOf("?");
+  return qIdx < 0 ? path : path.slice(0, qIdx);
 }
 
 export function isAuditRoute(path: string): boolean {

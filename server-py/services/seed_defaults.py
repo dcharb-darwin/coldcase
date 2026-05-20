@@ -126,15 +126,18 @@ def seed_tag_vocabulary(tenant_id: str) -> int:
 
     starter = [
         # (slug, label, color, applicable_to, description)
-        ("brady-relevant", "Brady-relevant", "red", ["case", "document", "message"],
+        # NOTE: `applicable_to` is the canonical list; this seed re-syncs
+        # existing rows so a kit-side update to the vocabulary scope reaches
+        # already-running tenants without a separate migration.
+        ("brady-relevant", "Brady-relevant", "red", ["case", "document", "message", "report"],
          "Material that may be exculpatory under Brady v. Maryland — flag for the city attorney."),
-        ("follow-up", "Follow-up", "amber", ["case", "document", "message"],
+        ("follow-up", "Follow-up", "amber", ["case", "document", "message", "report"],
          "Needs further investigation before the case can move forward."),
         ("suspect", "Suspect", "red", ["case", "document"],
          "Document or case pertaining to an identified suspect."),
         ("witness", "Witness", "blue", ["case", "document"],
          "Witness statement or related material."),
-        ("alibi", "Alibi", "indigo", ["document", "message"],
+        ("alibi", "Alibi", "indigo", ["document", "message", "report"],
          "Material supporting or undermining an alibi."),
         ("forensics", "Forensics", "emerald", ["case", "document"],
          "Lab results, ballistics, DNA, fingerprint, or similar forensic evidence."),
@@ -144,18 +147,33 @@ def seed_tag_vocabulary(tenant_id: str) -> int:
          "No active leads — case is in cold storage but not closed."),
     ]
     created = 0
+    updated = 0
     for slug, label, color, applicable_to, description in starter:
-        if Tag.objects(tenant_id=tenant_id, slug=slug).first():
+        existing = Tag.objects(tenant_id=tenant_id, slug=slug).first()
+        if existing is None:
+            Tag(
+                tenant_id=tenant_id, slug=slug, label=label,
+                color=color, applicable_to=applicable_to,
+                description=description,
+                kind=TagKind.USER.value, created_by="seed",
+            ).save()
+            created += 1
             continue
-        Tag(
-            tenant_id=tenant_id, slug=slug, label=label,
-            color=color, applicable_to=applicable_to,
-            description=description,
-            kind=TagKind.USER.value, created_by="seed",
-        ).save()
-        created += 1
-    if created:
-        logger.info("Seeded %d starter tags for tenant %s", created, tenant_id)
+        # Re-sync applicable_to + description from the canonical seed so
+        # kit-side scope changes (e.g. adding "report") propagate to
+        # tenants that booted before the change. Detective-specific
+        # overrides aren't supported on seed tags — admins can clone.
+        if (set(existing.applicable_to or []) != set(applicable_to)
+                or existing.description != description):
+            existing.applicable_to = applicable_to
+            existing.description = description
+            existing.save()
+            updated += 1
+    if created or updated:
+        logger.info(
+            "Tag vocab seed: %d created, %d updated for tenant %s",
+            created, updated, tenant_id,
+        )
     return created
 
 

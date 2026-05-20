@@ -13,6 +13,7 @@ from models.vendor_access import (
 )
 from models.tag import Tag, TagAssignment, TagKind, TagSubjectKind, TAG_COLOR_CHOICES
 from models.person import Person, PersonRole
+from models.timeline_entry import TimelineEntry, TimelineEntrySource
 
 __all__ = [
     "Case", "CaseStatus", "CaseClassification", "RetentionPolicy",
@@ -26,4 +27,5 @@ __all__ = [
     "VendorAccessRequest", "VendorAccessPurpose", "VendorAccessScopeKind", "VendorAccessStatus",
     "Tag", "TagAssignment", "TagKind", "TagSubjectKind", "TAG_COLOR_CHOICES",
     "Person", "PersonRole",
+    "TimelineEntry", "TimelineEntrySource",
 ]

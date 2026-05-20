@@ -7,6 +7,9 @@ populate without a privilege bump.
 
 from __future__ import annotations
 
+import json
+import logging
+import re
 from datetime import datetime
 from typing import Optional
 
@@ -18,8 +21,13 @@ from models import (
     TAG_COLOR_CHOICES,
 )
 from models.report import Report
+from providers.llm import get_llm_provider
 from routers._deps import CurrentUser, current_user, require_perm
+from services.document_text import extract_text
 from services.vendor_scope import enforce_vendor_scope
+
+
+logger = logging.getLogger(__name__)
 
 
 router = APIRouter(
@@ -164,6 +172,129 @@ def unassign_tag(
 
 
 # ── Per-case read: every tag on every artifact of this case ─────────────────
+
+
+# ── AI-suggested tags (Phase C) ────────────────────────────────────────────
+
+
+_JSON_BLOCK_RE = re.compile(r"\[\s*(?:\{[\s\S]*?\}\s*,?\s*)+\]")
+
+
+def _extract_json_list(text: str) -> list[dict]:
+    """LLM outputs JSON either bare or in a code fence. Pull the first
+    `[ {...}, ... ]` block we find and parse. Returns [] on any failure
+    — suggestions degrade quietly to an empty list."""
+    if not text:
+        return []
+    m = _JSON_BLOCK_RE.search(text)
+    if not m:
+        return []
+    try:
+        parsed = json.loads(m.group(0))
+        return parsed if isinstance(parsed, list) else []
+    except json.JSONDecodeError:
+        return []
+
+
+@router.post("/cases/{case_id}/tags/suggestions")
+@require_perm("case.read")
+def suggest_tags(case_id: str, user: CurrentUser = Depends(current_user)):
+    """Ask the LLM to suggest 3-5 tags from the closed agency vocabulary
+    that fit this case, given its documents. Returns candidates the
+    detective accepts via the regular `POST /tags/{id}/assign/...` flow —
+    no automatic assignment.
+
+    Vocabulary stays closed: the model can only choose from `applicable_to`
+    case-scoped tags that aren't already applied. This avoids the LLM
+    inventing slugs that don't exist."""
+    case = Case.objects(id=case_id, tenant_id=user.tenant_id).first()
+    if not case:
+        raise HTTPException(404, "Case not found")
+
+    # Build the candidate vocabulary — case-applicable, not already applied.
+    case_tags = Tag.objects(tenant_id=user.tenant_id)
+    already = {
+        a.tag_id
+        for a in TagAssignment.objects(
+            tenant_id=user.tenant_id,
+            subject_kind=TagSubjectKind.CASE.value,
+            subject_id=case_id,
+        )
+    }
+    vocab = [
+        t for t in case_tags
+        if (not t.applicable_to or TagSubjectKind.CASE.value in t.applicable_to)
+        and str(t.id) not in already
+    ]
+    if not vocab:
+        return {"suggestions": [], "reason": "No applicable tags remain — all are already applied."}
+
+    # Compose context: case meta + a snippet of each document's first page.
+    # Cap the doc snippets so the prompt stays inside any reasonable model
+    # context budget; the goal is signal, not completeness.
+    docs = list(Document.objects(case=case)[:8])
+    snippets: list[str] = []
+    for d in docs:
+        try:
+            text = extract_text(d)
+        except Exception:  # noqa: BLE001 — never block on extraction
+            text = ""
+        if text:
+            # Trim per-doc so a long PDF doesn't dominate the prompt budget.
+            snippets.append(f"=== {d.original_filename} ===\n{text[:1500]}")
+    docs_block = "\n\n".join(snippets) if snippets else "(no document text available)"
+
+    vocab_block = "\n".join(
+        f"- {t.slug} — {t.label}: {t.description or '(no description)'}"
+        for t in vocab
+    )
+    system = (
+        "You suggest tags from a closed agency vocabulary for a cold-case "
+        "investigation file. You must ONLY return tags from the provided "
+        "vocabulary — do not invent new tags. Return a JSON array of "
+        "objects: [{\"slug\": \"…\", \"rationale\": \"…\"}]. Suggest 3 to 5 "
+        "tags maximum, only the ones that clearly apply based on the case "
+        "context. Leave out tags you're unsure about. Rationale must be "
+        "one short sentence (under 20 words) grounded in the case text."
+    )
+    user_prompt = (
+        f"Case: {case.case_number} — {case.title}\n"
+        f"Classification: {case.classification}\n"
+        f"Description: {case.description or '(none)'}\n\n"
+        f"Available vocabulary:\n{vocab_block}\n\n"
+        f"Document excerpts:\n{docs_block}\n\n"
+        f"Return JSON only."
+    )
+
+    try:
+        provider = get_llm_provider()
+        resp = provider.chat(system=system, user=user_prompt)
+        raw = resp.content if hasattr(resp, "content") else ""
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Tag suggestion provider failed: %s", exc)
+        return {"suggestions": [], "reason": f"LLM unavailable: {exc}"}
+
+    parsed = _extract_json_list(raw)
+    by_slug = {t.slug: t for t in vocab}
+    suggestions: list[dict] = []
+    seen: set[str] = set()
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        slug = (item.get("slug") or "").strip().lower()
+        rationale = (item.get("rationale") or "").strip()
+        if slug in seen or slug not in by_slug:
+            continue
+        seen.add(slug)
+        t = by_slug[slug]
+        suggestions.append({
+            "tag": t.to_dict(),
+            "rationale": rationale or "(no rationale provided)",
+        })
+        if len(suggestions) >= 5:
+            break
+
+    return {"suggestions": suggestions, "model": getattr(resp, "model", ""), "raw_preview": raw[:280]}
 
 
 @router.get("/cases/{case_id}/tags")

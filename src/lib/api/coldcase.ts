@@ -267,6 +267,20 @@ export async function unassignTag(
   await http.delete(`/tags/${tagId}/assign/${subjectKind}/${subjectId}`);
 }
 
+export interface TagSuggestion {
+  tag: Tag;
+  rationale: string;
+}
+
+export async function suggestCaseTags(caseId: string): Promise<{
+  suggestions: TagSuggestion[];
+  model?: string;
+  reason?: string;
+}> {
+  const { data } = await http.post(`/cases/${caseId}/tags/suggestions`);
+  return data;
+}
+
 // ── Persons ──────────────────────────────────────────────────────────────
 
 export type PersonRole =
@@ -301,6 +315,80 @@ export async function createPerson(caseId: string, body: {
 
 export async function deletePerson(caseId: string, personId: string): Promise<void> {
   await http.delete(`/cases/${caseId}/persons/${personId}`);
+}
+
+export interface PersonSuggestion {
+  name: string;
+  role: PersonRole;
+  descriptor: string;
+  rationale: string;
+}
+
+export async function suggestCasePersons(caseId: string): Promise<{
+  suggestions: PersonSuggestion[];
+  model?: string;
+  reason?: string;
+}> {
+  const { data } = await http.post(`/cases/${caseId}/persons/suggestions`);
+  return data;
+}
+
+// ── Timeline entries (detective-curated dated case events) ───────────────
+
+export type TimelineEntrySource = "manual" | "ai_suggested";
+
+export interface TimelineEntry {
+  id: string;
+  case_id: string;
+  occurred_at: string;
+  label: string;
+  notes: string;
+  source_document_id: string;
+  source: TimelineEntrySource;
+  rationale: string;
+  created_by: string;
+  created_at: string | null;
+}
+
+export interface TimelineEntrySuggestion {
+  occurred_at: string;
+  label: string;
+  notes: string;
+  source_document: string;
+  source_document_id: string;
+  rationale: string;
+}
+
+export async function listTimelineEntries(caseId: string): Promise<TimelineEntry[]> {
+  const { data } = await http.get<{ entries: TimelineEntry[] }>(
+    `/cases/${caseId}/timeline-entries`,
+  );
+  return data.entries;
+}
+
+export async function createTimelineEntry(caseId: string, body: {
+  occurred_at: string;
+  label: string;
+  notes?: string;
+  source_document_id?: string;
+  rationale?: string;
+  source?: TimelineEntrySource;
+}): Promise<TimelineEntry> {
+  const { data } = await http.post<TimelineEntry>(`/cases/${caseId}/timeline-entries`, body);
+  return data;
+}
+
+export async function deleteTimelineEntry(caseId: string, entryId: string): Promise<void> {
+  await http.delete(`/cases/${caseId}/timeline-entries/${entryId}`);
+}
+
+export async function suggestTimelineEntries(caseId: string): Promise<{
+  suggestions: TimelineEntrySuggestion[];
+  model?: string;
+  reason?: string;
+}> {
+  const { data } = await http.post(`/cases/${caseId}/timeline-entries/suggestions`);
+  return data;
 }
 
 export async function getCase(id: string): Promise<{

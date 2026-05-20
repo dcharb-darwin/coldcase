@@ -6,14 +6,21 @@ import {
   getCase,
   getDocumentText,
   getDocumentTextStatus,
+  assignTag,
   createPerson,
+  createTimelineEntry,
   deletePerson,
+  deleteTimelineEntry,
   getReportChain,
   listAuditEvents,
   listConversations,
   listPersons,
   listPromptSuggestions,
   listReportsForCase,
+  listTimelineEntries,
+  suggestCasePersons,
+  suggestCaseTags,
+  suggestTimelineEntries,
   registerDocument,
   sendMessage,
   uploadDocument,
@@ -27,13 +34,18 @@ import {
   type Message,
   type Person,
   type PersonRole,
+  type PersonSuggestion,
   type Report,
+  type TagSuggestion,
+  type TimelineEntry as TimelineEntryT,
+  type TimelineEntrySuggestion,
 } from "@/lib/api/coldcase";
 import { caseKeys } from "../queryKeys";
 import ChatPanel from "../components/ChatPanel";
 import ReportDrawer from "../components/ReportDrawer";
 import { CaseTagBar, TagChip } from "../components/TagChips";
-import { reportRoute, setHashPath } from "@/shell/routes";
+import { parseHashQuery, reportRoute, ROUTES, setHashPath } from "@/shell/routes";
+import { useHashRoute } from "@/shell/useHashRoute";
 import { useShellChrome } from "@/shell/ShellChromeContext";
 
 // NOTE: the "report" drawer kind was removed in Phase A · PR 3 — viewing /
@@ -89,6 +101,26 @@ export default function CaseDetailPage({ caseId }: CaseDetailPageProps) {
     }
     return;
   }, [data?.case.case_number, setDetailLabel]);
+
+  // Cross-route citation jump: ReportWorkspacePage forwards citation chip
+  // clicks here as `?doc=<filename>&line=<n>`. Switch to the Evidence tab,
+  // open the named document, flash the line, then clean the query so a
+  // refresh doesn't keep re-firing.
+  const route = useHashRoute();
+  useEffect(() => {
+    if (!data) return;
+    const q = parseHashQuery(route);
+    if (!q.doc || !q.line) return;
+    const target = data.documents.find((d) => d.original_filename === q.doc);
+    if (!target) {
+      setHashPath(`${ROUTES.casePrefix}${caseId}`);
+      return;
+    }
+    setActiveTab("evidence");
+    setActiveDocId(target.id);
+    setHighlightLine(Number(q.line));
+    setHashPath(`${ROUTES.casePrefix}${caseId}`);
+  }, [route, data, caseId]);
 
   // Citation handler — invoked by clickable chips in chat messages and report
   // text. Switches to the cited document and highlights the cited line.
@@ -428,30 +460,30 @@ function BriefTab({
           </div>
         </section>
 
-        {/* Tags grouped — user vocabulary above, system below. */}
-        {(userTags.length > 0 || sysTags.length > 0) ? (
-          <section>
-            <h2 className="text-[15px] font-semibold text-slate-900 mb-3">Tags</h2>
-            <div className="space-y-2">
-              {userTags.length > 0 ? (
-                <div>
-                  <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-1">Detective-applied</div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {userTags.map((t) => <TagChip key={t.id} tag={t} />)}
-                  </div>
+        {/* Tags — grouped (detective-applied + server-derived) with an
+            inline AI suggestion affordance. */}
+        <section>
+          <h2 className="text-[15px] font-semibold text-slate-900 mb-3">Tags</h2>
+          <div className="space-y-3">
+            {userTags.length > 0 ? (
+              <div>
+                <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-1">Detective-applied</div>
+                <div className="flex flex-wrap gap-1.5">
+                  {userTags.map((t) => <TagChip key={t.id} tag={t} />)}
                 </div>
-              ) : null}
-              {sysTags.length > 0 ? (
-                <div>
-                  <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-1">Server-derived</div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {sysTags.map((t) => <TagChip key={t.id} tag={t} />)}
-                  </div>
+              </div>
+            ) : null}
+            {sysTags.length > 0 ? (
+              <div>
+                <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-1">Server-derived</div>
+                <div className="flex flex-wrap gap-1.5">
+                  {sysTags.map((t) => <TagChip key={t.id} tag={t} />)}
                 </div>
-              ) : null}
-            </div>
-          </section>
-        ) : null}
+              </div>
+            ) : null}
+            <TagSuggestions caseId={c.id} />
+          </div>
+        </section>
 
         {/* Identifiers — for evidence.com / records management exports. */}
         <section>
@@ -475,6 +507,106 @@ function BriefTab({
           </section>
         ) : null}
       </div>
+    </div>
+  );
+}
+
+function TagSuggestions({ caseId }: { caseId: string }) {
+  const qc = useQueryClient();
+  // Lazy: the LLM call is paid + slow, so don't auto-fire. Show a CTA;
+  // the detective triggers the suggestion explicitly. Result is cached
+  // by react-query so toggling tabs doesn't re-spend.
+  const [run, setRun] = useState(false);
+  const { data, isFetching, error, refetch } = useQuery({
+    queryKey: ["tag-suggestions", caseId],
+    queryFn: () => suggestCaseTags(caseId),
+    enabled: run,
+    staleTime: 5 * 60_000,
+  });
+
+  // Dismissed slugs disappear locally until refetch. Keeps the picker
+  // from showing the same rejected suggestion over and over while the
+  // query is still cached.
+  const [dismissed, setDismissed] = useState<Set<string>>(new Set());
+
+  const acceptMut = useMutation({
+    mutationFn: (tagId: string) => assignTag(tagId, "case", caseId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: caseKeys.tags(caseId) });
+      qc.invalidateQueries({ queryKey: caseKeys.detail(caseId) });
+    },
+  });
+
+  const visible = (data?.suggestions ?? []).filter((s) => !dismissed.has(s.tag.slug));
+
+  return (
+    <div className="border border-slate-200 rounded p-3 bg-slate-50/40">
+      <div className="flex items-baseline justify-between gap-2 mb-2">
+        <div>
+          <div className="text-[12px] font-semibold text-slate-900">Suggest tags with AI</div>
+          <div className="text-[11px] text-slate-500">
+            Read the case docs and propose tags from the agency vocabulary.
+            You accept each suggestion individually.
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => { setRun(true); setDismissed(new Set()); refetch(); }}
+          disabled={isFetching}
+          className="px-2.5 py-1 text-xs rounded border border-blue-300 bg-white text-blue-800 hover:bg-blue-50 disabled:opacity-50 shrink-0"
+        >
+          {isFetching ? "Reading docs…" : run ? "Refresh" : "Suggest"}
+        </button>
+      </div>
+
+      {error ? <div className="text-xs text-red-700">{(error as Error).message}</div> : null}
+      {data?.reason ? <div className="text-xs text-slate-500 italic">{data.reason}</div> : null}
+
+      {run && !isFetching && visible.length === 0 && !error ? (
+        <div className="text-xs text-slate-500 italic">
+          {data?.suggestions.length
+            ? "All suggestions dismissed."
+            : "No suggestions returned."}
+        </div>
+      ) : null}
+
+      {visible.length > 0 ? (
+        <ul className="space-y-1.5 mt-1">
+          {visible.map((s: TagSuggestion) => {
+            const accepted = acceptMut.isSuccess && acceptMut.variables === s.tag.id;
+            return (
+              <li
+                key={s.tag.slug}
+                className="flex items-start gap-2 p-2 bg-white border border-slate-200 rounded"
+              >
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <TagChip tag={s.tag} />
+                  </div>
+                  <div className="text-[11px] text-slate-600 mt-1 leading-snug">{s.rationale}</div>
+                </div>
+                <div className="flex flex-col gap-1 shrink-0">
+                  <button
+                    type="button"
+                    disabled={accepted || acceptMut.isPending}
+                    onClick={() => acceptMut.mutate(s.tag.id)}
+                    className="px-2 py-0.5 text-[11px] rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    {accepted ? "Added ✓" : "Accept"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDismissed((p) => new Set(p).add(s.tag.slug))}
+                    className="px-2 py-0.5 text-[11px] rounded border border-slate-200 text-slate-600 hover:bg-slate-100"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
     </div>
   );
 }
@@ -657,6 +789,112 @@ const PERSON_ROLES: { value: PersonRole; label: string; color: string }[] = [
   { value: "other",              label: "Other",              color: "bg-slate-100 text-slate-700 border-slate-300" },
 ];
 
+function PersonSuggestions({ caseId }: { caseId: string }) {
+  const qc = useQueryClient();
+  const [run, setRun] = useState(false);
+  const { data, isFetching, error, refetch } = useQuery({
+    queryKey: ["person-suggestions", caseId],
+    queryFn: () => suggestCasePersons(caseId),
+    enabled: run,
+    staleTime: 5 * 60_000,
+  });
+  const [dismissed, setDismissed] = useState<Set<string>>(new Set());
+
+  const acceptMut = useMutation({
+    mutationFn: (s: PersonSuggestion) => createPerson(caseId, {
+      name: s.name, role: s.role, descriptor: s.descriptor,
+      notes: s.rationale ? `Suggested by AI · ${s.rationale}` : "",
+    }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["case-persons", caseId] });
+    },
+  });
+
+  const visible = (data?.suggestions ?? []).filter((s) => !dismissed.has(s.name));
+
+  return (
+    <div className="border border-slate-200 rounded p-3 bg-slate-50/40 mb-4">
+      <div className="flex items-baseline justify-between gap-2 mb-2">
+        <div>
+          <div className="text-[12px] font-semibold text-slate-900">Suggest people with AI</div>
+          <div className="text-[11px] text-slate-500">
+            Scan the case documents and propose named people with role + descriptor.
+            You accept each individually.
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => { setRun(true); setDismissed(new Set()); refetch(); }}
+          disabled={isFetching}
+          className="px-2.5 py-1 text-xs rounded border border-blue-300 bg-white text-blue-800 hover:bg-blue-50 disabled:opacity-50 shrink-0"
+        >
+          {isFetching ? "Reading docs…" : run ? "Refresh" : "Suggest"}
+        </button>
+      </div>
+
+      {error ? <div className="text-xs text-red-700">{(error as Error).message}</div> : null}
+      {data?.reason ? <div className="text-xs text-slate-500 italic">{data.reason}</div> : null}
+
+      {run && !isFetching && visible.length === 0 && !error && !data?.reason ? (
+        <div className="text-xs text-slate-500 italic">
+          {data?.suggestions.length
+            ? "All suggestions dismissed."
+            : "No new people found in the documents."}
+        </div>
+      ) : null}
+
+      {visible.length > 0 ? (
+        <ul className="space-y-1.5 mt-1">
+          {visible.map((s: PersonSuggestion) => {
+            const roleDef = PERSON_ROLES.find((r) => r.value === s.role) || PERSON_ROLES[5]!;
+            const accepted = acceptMut.isSuccess && acceptMut.variables?.name === s.name;
+            return (
+              <li
+                key={s.name}
+                className="flex items-start gap-2 p-2 bg-white border border-slate-200 rounded"
+              >
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium text-slate-900">{s.name}</span>
+                    <span className={`inline-flex items-center px-2 py-0.5 rounded-full border text-[11px] ${roleDef.color}`}>
+                      {roleDef.label}
+                    </span>
+                  </div>
+                  {s.descriptor ? (
+                    <div className="text-xs text-slate-600 mt-0.5">{s.descriptor}</div>
+                  ) : null}
+                  {s.rationale ? (
+                    <div className="text-[11px] text-slate-500 mt-1 leading-snug italic">
+                      {s.rationale}
+                    </div>
+                  ) : null}
+                </div>
+                <div className="flex flex-col gap-1 shrink-0">
+                  <button
+                    type="button"
+                    disabled={accepted || acceptMut.isPending}
+                    onClick={() => acceptMut.mutate(s)}
+                    className="px-2 py-0.5 text-[11px] rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    {accepted ? "Added ✓" : "Accept"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDismissed((p) => new Set(p).add(s.name))}
+                    className="px-2 py-0.5 text-[11px] rounded border border-slate-200 text-slate-600 hover:bg-slate-100"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
 function PeopleTab({ caseId }: { caseId: string }) {
   const qc = useQueryClient();
   const { data: persons = [], isLoading } = useQuery({
@@ -706,15 +944,20 @@ function PeopleTab({ caseId }: { caseId: string }) {
             </p>
           </div>
           {!adding ? (
-            <button
-              type="button"
-              onClick={() => setAdding(true)}
-              className="px-3 py-1.5 text-sm rounded bg-blue-600 text-white hover:bg-blue-700"
-            >
-              + Add person
-            </button>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setAdding(true)}
+                className="px-3 py-1.5 text-sm rounded bg-blue-600 text-white hover:bg-blue-700"
+              >
+                + Add person
+              </button>
+            </div>
           ) : null}
         </div>
+
+        <PersonSuggestions caseId={caseId} />
+
 
         {adding ? (
           <div className="border border-slate-200 rounded p-3 mb-4 bg-slate-50/50 space-y-2">
@@ -863,22 +1106,267 @@ function TimelineTab({ caseId }: { caseId: string }) {
 
   return (
     <div className="p-6 overflow-y-auto h-full">
-      <div className="max-w-3xl">
-        <h2 className="text-[15px] font-semibold text-slate-900 mb-1">Timeline</h2>
-        <p className="text-xs text-slate-500 mb-4">
-          Every action on this case, chronologically. {events.length} event{events.length === 1 ? "" : "s"}.
-        </p>
-        {grouped.map(([day, list]) => (
-          <section key={day} className="mb-6">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2 sticky top-0 bg-white py-1">
-              {day === "unknown" ? "Unknown date" : formatDay(day)}
-            </h3>
-            <ol className="border-l-2 border-slate-200 pl-4 space-y-2">
-              {list.map((e) => <TimelineRow key={e.id} event={e} />)}
-            </ol>
-          </section>
-        ))}
+      <div className="max-w-3xl space-y-6">
+        <CaseEventsSection caseId={caseId} />
+
+        <section>
+          <h2 className="text-[15px] font-semibold text-slate-900 mb-1">Activity log</h2>
+          <p className="text-xs text-slate-500 mb-4">
+            Every action on this case, chronologically. {events.length} event{events.length === 1 ? "" : "s"}.
+          </p>
+          {grouped.map(([day, list]) => (
+            <section key={day} className="mb-6">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2 sticky top-0 bg-white py-1">
+                {day === "unknown" ? "Unknown date" : formatDay(day)}
+              </h3>
+              <ol className="border-l-2 border-slate-200 pl-4 space-y-2">
+                {list.map((e) => <TimelineRow key={e.id} event={e} />)}
+              </ol>
+            </section>
+          ))}
+        </section>
       </div>
+    </div>
+  );
+}
+
+function CaseEventsSection({ caseId }: { caseId: string }) {
+  const qc = useQueryClient();
+  const { data: entries = [] } = useQuery({
+    queryKey: ["case-timeline-entries", caseId],
+    queryFn: () => listTimelineEntries(caseId),
+  });
+  const [adding, setAdding] = useState(false);
+  const [occurred, setOccurred] = useState("");
+  const [label, setLabel] = useState("");
+  const [notes, setNotes] = useState("");
+
+  const invalidate = () => qc.invalidateQueries({ queryKey: ["case-timeline-entries", caseId] });
+  const addMut = useMutation({
+    mutationFn: () => createTimelineEntry(caseId, {
+      occurred_at: occurred.trim(), label: label.trim(), notes: notes.trim(),
+    }),
+    onSuccess: () => { setOccurred(""); setLabel(""); setNotes(""); setAdding(false); invalidate(); },
+  });
+  const deleteMut = useMutation({
+    mutationFn: (id: string) => deleteTimelineEntry(caseId, id),
+    onSuccess: invalidate,
+  });
+
+  return (
+    <section>
+      <div className="flex items-baseline justify-between mb-2">
+        <div>
+          <h2 className="text-[15px] font-semibold text-slate-900">Case events</h2>
+          <p className="text-xs text-slate-500">
+            The detective's chronology of what happened — distinct from the
+            system activity log below. {entries.length} entr{entries.length === 1 ? "y" : "ies"}.
+          </p>
+        </div>
+        {!adding ? (
+          <button
+            type="button"
+            onClick={() => setAdding(true)}
+            className="px-2.5 py-1 text-xs rounded border border-slate-300 hover:bg-slate-50"
+          >
+            + Add event
+          </button>
+        ) : null}
+      </div>
+
+      <TimelineSuggestions caseId={caseId} existingLabels={new Set(entries.map((e) => e.label.toLowerCase()))} onAccepted={invalidate} />
+
+      {adding ? (
+        <div className="border border-slate-200 rounded p-3 mb-3 bg-slate-50/60 space-y-2">
+          <div className="grid grid-cols-3 gap-2">
+            <label className="block">
+              <span className="text-[11px] text-slate-600">When (free form)</span>
+              <input
+                className="mt-0.5 w-full border border-slate-300 rounded px-2 py-1 text-sm"
+                value={occurred} onChange={(e) => setOccurred(e.target.value)}
+                placeholder="e.g. 1945-08-15 17:00 or circa Aug 1945"
+                autoFocus
+              />
+            </label>
+            <label className="block col-span-2">
+              <span className="text-[11px] text-slate-600">Label</span>
+              <input
+                className="mt-0.5 w-full border border-slate-300 rounded px-2 py-1 text-sm"
+                value={label} onChange={(e) => setLabel(e.target.value)}
+                placeholder="One short phrase describing what happened"
+              />
+            </label>
+          </div>
+          <label className="block">
+            <span className="text-[11px] text-slate-600">Notes (optional)</span>
+            <textarea
+              className="mt-0.5 w-full border border-slate-300 rounded px-2 py-1 text-sm"
+              rows={2}
+              value={notes} onChange={(e) => setNotes(e.target.value)}
+            />
+          </label>
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => { setAdding(false); setOccurred(""); setLabel(""); setNotes(""); }}
+              className="px-3 py-1 text-sm rounded border border-slate-300 hover:bg-slate-100"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={addMut.isPending || !occurred.trim() || !label.trim()}
+              onClick={() => addMut.mutate()}
+              className="px-3 py-1 text-sm rounded bg-blue-600 text-white disabled:opacity-50"
+            >
+              {addMut.isPending ? "Saving…" : "Save"}
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {entries.length === 0 ? (
+        <div className="border border-dashed border-slate-300 rounded p-6 text-center text-xs text-slate-500">
+          No events yet. Add the dated facts of the case so you have a chronological
+          narrative — or click "Suggest events" to extract them from the documents.
+        </div>
+      ) : (
+        <ol className="border-l-2 border-emerald-200 pl-4 space-y-2">
+          {entries.map((e) => <CaseEventRow key={e.id} entry={e} onDelete={() => deleteMut.mutate(e.id)} />)}
+        </ol>
+      )}
+    </section>
+  );
+}
+
+function CaseEventRow({ entry, onDelete }: { entry: TimelineEntryT; onDelete: () => void }) {
+  const isAi = entry.source === "ai_suggested";
+  return (
+    <li className="relative group">
+      <span className={`absolute -left-[22px] top-1.5 w-3 h-3 rounded-full ring-2 ring-white ${isAi ? "bg-purple-500" : "bg-emerald-500"}`} />
+      <div className="flex items-baseline justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-baseline gap-2">
+            <span className="text-xs font-mono text-slate-600 shrink-0">{entry.occurred_at}</span>
+            <span className="text-sm text-slate-900">{entry.label}</span>
+            {isAi ? (
+              <span className="text-[10px] uppercase tracking-wide text-purple-700">AI</span>
+            ) : null}
+          </div>
+          {entry.notes ? (
+            <div className="text-xs text-slate-600 mt-0.5 leading-relaxed">{entry.notes}</div>
+          ) : null}
+          {isAi && entry.rationale ? (
+            <div className="text-[11px] text-purple-700 italic mt-0.5">{entry.rationale}</div>
+          ) : null}
+        </div>
+        <button
+          type="button"
+          onClick={onDelete}
+          className="opacity-0 group-hover:opacity-100 text-[11px] text-slate-400 hover:text-red-700 shrink-0"
+          title="Remove this event"
+        >
+          remove
+        </button>
+      </div>
+    </li>
+  );
+}
+
+function TimelineSuggestions({
+  caseId, existingLabels, onAccepted,
+}: { caseId: string; existingLabels: Set<string>; onAccepted: () => void }) {
+  const [run, setRun] = useState(false);
+  const { data, isFetching, error, refetch } = useQuery({
+    queryKey: ["timeline-suggestions", caseId],
+    queryFn: () => suggestTimelineEntries(caseId),
+    enabled: run,
+    staleTime: 5 * 60_000,
+  });
+  const [dismissed, setDismissed] = useState<Set<string>>(new Set());
+
+  const acceptMut = useMutation({
+    mutationFn: (s: TimelineEntrySuggestion) => createTimelineEntry(caseId, {
+      occurred_at: s.occurred_at, label: s.label, notes: s.notes,
+      source_document_id: s.source_document_id, rationale: s.rationale,
+      source: "ai_suggested",
+    }),
+    onSuccess: onAccepted,
+  });
+
+  const visible = (data?.suggestions ?? []).filter(
+    (s) => !dismissed.has(s.label) && !existingLabels.has(s.label.toLowerCase()),
+  );
+
+  return (
+    <div className="border border-slate-200 rounded p-3 bg-slate-50/40 mb-3">
+      <div className="flex items-baseline justify-between gap-2 mb-2">
+        <div>
+          <div className="text-[12px] font-semibold text-slate-900">Suggest events with AI</div>
+          <div className="text-[11px] text-slate-500">
+            Pull dated events from the case documents. You accept each individually.
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => { setRun(true); setDismissed(new Set()); refetch(); }}
+          disabled={isFetching}
+          className="px-2.5 py-1 text-xs rounded border border-blue-300 bg-white text-blue-800 hover:bg-blue-50 disabled:opacity-50 shrink-0"
+        >
+          {isFetching ? "Reading docs…" : run ? "Refresh" : "Suggest"}
+        </button>
+      </div>
+
+      {error ? <div className="text-xs text-red-700">{(error as Error).message}</div> : null}
+      {data?.reason ? <div className="text-xs text-slate-500 italic">{data.reason}</div> : null}
+
+      {run && !isFetching && visible.length === 0 && !error && !data?.reason ? (
+        <div className="text-xs text-slate-500 italic">
+          {data?.suggestions.length ? "All suggestions handled." : "No new events found."}
+        </div>
+      ) : null}
+
+      {visible.length > 0 ? (
+        <ul className="space-y-1.5 mt-1">
+          {visible.map((s: TimelineEntrySuggestion) => {
+            const accepted = acceptMut.isSuccess && acceptMut.variables?.label === s.label;
+            return (
+              <li key={s.label} className="flex items-start gap-2 p-2 bg-white border border-slate-200 rounded">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-xs font-mono text-slate-600">{s.occurred_at}</span>
+                    <span className="text-sm text-slate-900 font-medium">{s.label}</span>
+                  </div>
+                  {s.notes ? <div className="text-xs text-slate-600 mt-0.5">{s.notes}</div> : null}
+                  {s.rationale ? (
+                    <div className="text-[11px] text-purple-700 italic mt-0.5">{s.rationale}</div>
+                  ) : null}
+                  {s.source_document ? (
+                    <div className="text-[10px] text-slate-400 mt-0.5 font-mono">{s.source_document}</div>
+                  ) : null}
+                </div>
+                <div className="flex flex-col gap-1 shrink-0">
+                  <button
+                    type="button"
+                    disabled={accepted || acceptMut.isPending}
+                    onClick={() => acceptMut.mutate(s)}
+                    className="px-2 py-0.5 text-[11px] rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    {accepted ? "Added ✓" : "Accept"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDismissed((p) => new Set(p).add(s.label))}
+                    className="px-2 py-0.5 text-[11px] rounded border border-slate-200 text-slate-600 hover:bg-slate-100"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
     </div>
   );
 }

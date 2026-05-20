@@ -1,7 +1,7 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
-  listAuditEvents, listCases,
+  listAuditEvents, listCases, listTags,
   type AuditEvent, type Case,
 } from "@/lib/api/coldcase";
 import { ROUTES, setHashPath } from "@/shell/routes";
@@ -29,8 +29,11 @@ export default function DashboardPage() {
     queryFn: () => listCases({ mine: true, limit: 24 }),
     staleTime: 30_000,
   });
+  // Hide fixtures up-front; tag filtering + the 8-row display cap apply
+  // inside MyCases so the chip row can show realistic counts and the cap
+  // doesn't accidentally exclude matching tagged rows.
   const myCases = useMemo(
-    () => myCasesRaw.filter((c) => !TEST_FIXTURE_PREFIX.test(c.case_number)).slice(0, 8),
+    () => myCasesRaw.filter((c) => !TEST_FIXTURE_PREFIX.test(c.case_number)),
     [myCasesRaw],
   );
 
@@ -136,8 +139,88 @@ function RecentActivity({ events }: { events: AuditEvent[] }) {
 }
 
 function MyCases({ cases, loading }: { cases: Case[]; loading: boolean }) {
+  const [activeTagSlugs, setActiveTagSlugs] = useState<string[]>([]);
+
+  // Tag chips for filtering — only show slugs actually present on the
+  // current case set, user + system merged. Same convention as the
+  // /cases list filter row.
+  const inUseTags = useMemo(() => {
+    const seen = new Map<string, { slug: string; label: string; kind: "user" | "system" }>();
+    for (const c of cases) {
+      for (const t of c.tags ?? []) {
+        if (!seen.has(t.slug)) seen.set(t.slug, { slug: t.slug, label: t.label, kind: t.kind });
+      }
+    }
+    return [...seen.values()].sort((a, b) => {
+      if (a.kind !== b.kind) return a.kind === "user" ? -1 : 1;
+      return a.label.localeCompare(b.label);
+    });
+  }, [cases]);
+
+  const { data: vocab = [] } = useQuery({
+    queryKey: ["tags", "vocab"],
+    queryFn: listTags,
+    staleTime: 5 * 60_000,
+    enabled: inUseTags.length > 0,
+  });
+  const vocabBySlug = useMemo(() => {
+    const m = new Map<string, string>();
+    vocab.forEach((t) => m.set(t.slug, t.description));
+    return m;
+  }, [vocab]);
+
+  const toggleTag = (slug: string) => setActiveTagSlugs((prev) =>
+    prev.includes(slug) ? prev.filter((s) => s !== slug) : [...prev, slug],
+  );
+
+  const filtered = useMemo(() => {
+    if (activeTagSlugs.length === 0) return cases;
+    return cases.filter((c) => {
+      const have = new Set((c.tags ?? []).map((t) => t.slug));
+      return activeTagSlugs.every((s) => have.has(s));
+    });
+  }, [cases, activeTagSlugs]);
+  // Cap display at 8 AFTER filtering so a narrow filter doesn't blank
+  // the card just because the matches sit past the cap on the raw list.
+  const visible = filtered.slice(0, 8);
+
   return (
-    <Card title={`My cases (${cases.length})`}>
+    <Card title={`My cases (${filtered.length}${filtered.length !== cases.length ? ` of ${cases.length}` : ""})`}>
+      {inUseTags.length > 0 ? (
+        <div className="flex flex-wrap items-center gap-1.5 mb-3 -mt-1">
+          {inUseTags.map((t) => {
+            const active = activeTagSlugs.includes(t.slug);
+            const isSystem = t.kind === "system";
+            return (
+              <button
+                key={t.slug}
+                type="button"
+                onClick={() => toggleTag(t.slug)}
+                className={
+                  "inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[11px] font-medium transition-colors " +
+                  (active
+                    ? "bg-blue-600 text-white border-blue-600 hover:bg-blue-700"
+                    : "bg-white text-slate-700 border-slate-300 hover:bg-slate-50")
+                }
+                title={vocabBySlug.get(t.slug) ?? t.label}
+              >
+                <span className="opacity-70">{isSystem ? "🔒" : "#"}</span>
+                {t.label}
+              </button>
+            );
+          })}
+          {activeTagSlugs.length > 0 ? (
+            <button
+              type="button"
+              onClick={() => setActiveTagSlugs([])}
+              className="text-[11px] text-slate-500 hover:text-slate-800 ml-1 underline"
+            >
+              clear
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+
       {loading ? (
         <p className="text-sm text-slate-500">Loading…</p>
       ) : cases.length === 0 ? (
@@ -152,9 +235,11 @@ function MyCases({ cases, loading }: { cases: Case[]; loading: boolean }) {
           </button>{" "}
           page to create one.
         </p>
+      ) : filtered.length === 0 ? (
+        <p className="text-sm text-slate-500 italic">No cases match the current filter.</p>
       ) : (
         <ul className="divide-y divide-slate-100">
-          {cases.map((c) => (
+          {visible.map((c) => (
             <li key={c.id}>
               <button
                 type="button"

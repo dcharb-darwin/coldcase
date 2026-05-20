@@ -20,6 +20,7 @@ import {
 } from "@/lib/api/coldcase";
 import { caseKeys, reportKeys } from "../queryKeys";
 import CitationText, { extractCitations } from "./CitationText";
+import { CaseTagBar } from "./TagChips";
 
 type DrawerState =
   | { kind: "closed" }
@@ -307,20 +308,28 @@ function WorkspaceHeader({
   report, phase, dirty, onClose,
 }: { report: Report; phase: Phase; dirty: boolean; onClose: () => void }) {
   return (
-    <header className="bg-white border-b border-slate-200 px-6 py-3 flex items-center gap-4">
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2">
-          <h2 className="text-base font-semibold truncate">📋 {report.title}</h2>
-          <StatusBadge status={report.status} />
-          {dirty ? <span className="text-[11px] text-amber-700">• unsaved changes</span> : null}
+    <header className="bg-white border-b border-slate-200 px-6 py-3">
+      <div className="flex items-center gap-4">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <h2 className="text-base font-semibold truncate">📋 {report.title}</h2>
+            <StatusBadge status={report.status} />
+            {dirty ? <span className="text-[11px] text-amber-700">• unsaved changes</span> : null}
+          </div>
+          <div className="text-[11px] text-slate-500 mt-0.5">
+            Report ID <code>{report.id.slice(-8)}</code>
+            {report.signed_at ? <> · signed {new Date(report.signed_at).toLocaleString()}</> : null}
+          </div>
         </div>
-        <div className="text-[11px] text-slate-500 mt-0.5">
-          Report ID <code>{report.id.slice(-8)}</code>
-          {report.signed_at ? <> · signed {new Date(report.signed_at).toLocaleString()}</> : null}
-        </div>
+        <PhaseStepper phase={phase} />
+        <button type="button" onClick={onClose} className="text-slate-400 text-2xl leading-none px-2">×</button>
       </div>
-      <PhaseStepper phase={phase} />
-      <button type="button" onClick={onClose} className="text-slate-400 text-2xl leading-none px-2">×</button>
+      {/* Per-report tag bar — closed agency vocabulary scoped to subject_kind=report.
+          Detective flags reports as e.g. brady-relevant or follow-up so the
+          city attorney can filter at the report level later. */}
+      <div className="mt-2">
+        <CaseTagBar caseId={report.case_id} subjectKind="report" subjectId={report.id} />
+      </div>
     </header>
   );
 }

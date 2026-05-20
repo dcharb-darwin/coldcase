@@ -10,21 +10,25 @@ import { ReportWorkspace } from "../components/ReportDrawer";
  * message — a route would feel like a redirect mid-thought), but the
  * edit/sign/export flow is a workspace and earns its own URL.
  *
- * Citation click + close both navigate back to the case detail. The
- * Evidence tab is the default, so the user lands where they expect to see
- * the cited document. Cross-route highlight is a Phase A polish item.
+ * Citation chip clicks bounce back to the case detail with `?doc=…&line=…`
+ * query params; the case page parses those on mount and jumps straight to
+ * the cited line in the Evidence tab.
  */
 export default function ReportWorkspacePage({
   caseId, reportId,
 }: { caseId: string; reportId: string }) {
   const backToCase = () => setHashPath(`${ROUTES.casePrefix}${caseId}`);
+  const jumpToCitation = (filename: string, line: number) => {
+    const params = new URLSearchParams({ doc: filename, line: String(line) });
+    setHashPath(`${ROUTES.casePrefix}${caseId}?${params.toString()}`);
+  };
   return (
     <div className="h-[calc(100vh-var(--shell-topbar-height,56px))] bg-slate-100">
       <ReportWorkspace
         caseId={caseId}
         reportId={reportId}
         onClose={backToCase}
-        onCitationClick={() => backToCase()}
+        onCitationClick={jumpToCitation}
       />
     </div>
   );

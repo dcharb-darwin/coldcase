@@ -118,6 +118,7 @@ def create_app() -> FastAPI:
     from routers.admin_compliance import router as admin_compliance_router
     from routers.tags import router as tags_router
     from routers.persons import router as persons_router
+    from routers.timeline_entries import router as timeline_entries_router
     from seed.synthetic_case import router as demo_router
     from seed.civil_rights_cases import router as civil_rights_router
     application.include_router(cases_router, prefix=api_prefix)
@@ -130,6 +131,7 @@ def create_app() -> FastAPI:
     application.include_router(admin_compliance_router, prefix=api_prefix)
     application.include_router(tags_router, prefix=api_prefix)
     application.include_router(persons_router, prefix=api_prefix)
+    application.include_router(timeline_entries_router, prefix=api_prefix)
     application.include_router(demo_router, prefix=api_prefix)
     application.include_router(civil_rights_router, prefix=api_prefix)
 
