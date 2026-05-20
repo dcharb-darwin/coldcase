@@ -34,10 +34,15 @@ class Document(MEDocument):
     uploaded_by = StringField(required=True)
     uploaded_at = DateTimeField(default=datetime.utcnow)
 
+    # Stable id for federated systems. Defaults to `{case.external_id}:doc:{id}`
+    # at create-time — see docs/design/workflow-and-ux.md §13.
+    external_id = StringField()
+
     def to_dict(self) -> dict:
         return {
             "id": str(self.id),
             "case_id": str(self.case.id) if self.case else None,
+            "external_id": self.external_id or "",
             "storage_uri": self.storage_uri,
             "sha256": self.sha256,
             "original_filename": self.original_filename,

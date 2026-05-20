@@ -22,6 +22,8 @@ export type RetentionPolicy = "match_official_report" | "7y" | "indefinite";
 export interface Case {
   id: string;
   case_number: string;
+  external_id: string;
+  agency_ori_snapshot: string;
   title: string;
   classification: CaseClassification;
   status: CaseStatus;
@@ -29,15 +31,21 @@ export interface Case {
   primary_investigator_id: string;
   co_investigator_ids: string[];
   description: string;
+  date_of_incident: string | null;
   created_by: string;
   created_at: string | null;
   closed_at: string | null;
   last_activity_at: string | null;
+  /** User-applied tag list (case-scope assignments). Embedded by list/detail. */
+  tags?: Tag[];
+  /** Server-computed system tags (signed-report, vendor-accessed, etc.). */
+  system_tags?: Tag[];
 }
 
 export interface Document {
   id: string;
   case_id: string;
+  external_id: string;
   storage_uri: string;
   sha256: string;
   original_filename: string;
@@ -137,6 +145,9 @@ export interface Report {
   exported_artifact_uri: string;
   export_target: string;
   exported_at: string | null;
+  external_id: string;
+  evidence_com_asset_id: string;
+  evidence_com_pushed_at: string | null;
   supersedes_report_id: string | null;
   created_by: string;
   created_at: string | null;
@@ -162,9 +173,134 @@ export interface AuditEvent {
 
 // ── Cases ──────────────────────────────────────────────────────────────────
 
-export async function listCases(): Promise<Case[]> {
-  const { data } = await http.get<{ cases: Case[] }>("/cases");
+export async function listCases(opts: { mine?: boolean; limit?: number } = {}): Promise<Case[]> {
+  const params: Record<string, string> = {};
+  if (opts.mine) params.mine = "true";
+  if (opts.limit) params.limit = String(opts.limit);
+  const { data } = await http.get<{ cases: Case[] }>("/cases", { params });
   return data.cases;
+}
+
+export interface CompliancePreflightCheck {
+  id: string;
+  label: string;
+  statute_ref: string;
+  passed: boolean;
+  detail: string;
+}
+
+export interface CompliancePreflight {
+  ready: boolean;
+  environment: string;
+  service: string;
+  checks: CompliancePreflightCheck[];
+  failed_check_ids: string[];
+}
+
+export async function getCompliancePreflight(): Promise<CompliancePreflight> {
+  const { data } = await http.get<CompliancePreflight>("/admin/compliance/preflight");
+  return data;
+}
+
+// ── Tags ─────────────────────────────────────────────────────────────────
+
+export type TagKind = "system" | "user";
+export type TagSubjectKind = "case" | "document" | "message" | "report";
+export type TagColor =
+  | "slate" | "red" | "amber" | "emerald"
+  | "blue" | "indigo" | "purple" | "pink";
+
+export interface Tag {
+  id: string;
+  label: string;
+  slug: string;
+  description: string;
+  kind: TagKind;
+  color: TagColor;
+  applicable_to: TagSubjectKind[];
+  created_by: string;
+  created_at: string | null;
+}
+
+export interface TagAssignment {
+  id: string;
+  tag_id: string;
+  subject_kind: TagSubjectKind;
+  subject_id: string;
+  case_id: string | null;
+  applied_by: string;
+  applied_at: string | null;
+}
+
+export interface CaseTagAssignment extends TagAssignment {
+  tag: Tag;
+}
+
+export async function listTags(): Promise<Tag[]> {
+  const { data } = await http.get<{ tags: Tag[] }>("/tags");
+  return data.tags;
+}
+
+export async function listCaseTags(caseId: string): Promise<CaseTagAssignment[]> {
+  const { data } = await http.get<{ assignments: CaseTagAssignment[] }>(
+    `/cases/${caseId}/tags`,
+  );
+  return data.assignments;
+}
+
+export async function assignTag(
+  tagId: string,
+  subjectKind: TagSubjectKind,
+  subjectId: string,
+): Promise<TagAssignment> {
+  const { data } = await http.post<TagAssignment>(
+    `/tags/${tagId}/assign/${subjectKind}/${subjectId}`,
+  );
+  return data;
+}
+
+export async function unassignTag(
+  tagId: string,
+  subjectKind: TagSubjectKind,
+  subjectId: string,
+): Promise<void> {
+  await http.delete(`/tags/${tagId}/assign/${subjectKind}/${subjectId}`);
+}
+
+// ── Persons ──────────────────────────────────────────────────────────────
+
+export type PersonRole =
+  | "suspect" | "witness" | "victim" | "officer"
+  | "person_of_interest" | "other";
+
+export interface Person {
+  id: string;
+  case_id: string;
+  name: string;
+  role: PersonRole;
+  descriptor: string;
+  notes: string;
+  created_by: string;
+  created_at: string | null;
+}
+
+export async function listPersons(caseId: string): Promise<Person[]> {
+  const { data } = await http.get<{ persons: Person[] }>(`/cases/${caseId}/persons`);
+  return data.persons;
+}
+
+export async function createPerson(caseId: string, body: {
+  name: string;
+  role?: PersonRole;
+  descriptor?: string;
+  notes?: string;
+}): Promise<Person> {
+  const { data } = await http.post<Person>(`/cases/${caseId}/persons`, body);
+  return data;
+}
+
+export async function deletePerson(caseId: string, personId: string): Promise<void> {
+  await http.delete(`/cases/${caseId}/persons/${personId}`);
 }
 
 export async function getCase(id: string): Promise<{

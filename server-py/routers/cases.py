@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, date
 from typing import Optional
 
 from pathlib import PurePosixPath
@@ -13,11 +13,15 @@ from pydantic import BaseModel, Field
 from models import (
     Case, CaseStatus, CaseClassification, RetentionPolicy,
     Document, MediaInput, MediaSourceType,
+    Tag, TagAssignment, TagSubjectKind,
+    AuditEvent, AuditEventType,
 )
+from models.message import Message
+from models.report import Report, ReportStatus
 from models.audit_event import AuditEventType
 from providers.document_storage import get_document_storage_provider
 from routers._deps import CurrentUser, current_user, require_perm
-from services import case_audit
+from services import case_audit, external_id as ext_id
 from services.vendor_scope import enforce_vendor_scope
 
 
@@ -37,6 +41,10 @@ class CreateCaseBody(BaseModel):
     retention_policy: RetentionPolicy = RetentionPolicy.MATCH_OFFICIAL_REPORT
     description: str = ""
     co_investigator_ids: list[str] = Field(default_factory=list)
+    # The date the underlying incident occurred (distinct from when the
+    # case was registered in Cold Case). Required for future evidence.com
+    # `incident_date` mapping; optional today.
+    date_of_incident: Optional[date] = None
 
 
 class UpdateCaseBody(BaseModel):
@@ -46,6 +54,7 @@ class UpdateCaseBody(BaseModel):
     description: Optional[str] = None
     co_investigator_ids: Optional[list[str]] = None
     status: Optional[CaseStatus] = None
+    date_of_incident: Optional[date] = None
 
 
 class RegisterDocumentBody(BaseModel):
@@ -71,11 +80,141 @@ class RegisterMediaBody(BaseModel):
 # ── Endpoints ───────────────────────────────────────────────────────────────
 
 
+def _compute_system_tags_by_case(tenant_id: str, case_ids: list[str]) -> dict[str, list[dict]]:
+    """Derive system tags for a set of cases from current state.
+
+    Computed lazily rather than persisted, so the tags can never drift from
+    the underlying truth. Each system tag is a one-line aggregate against
+    its source collection — cheap on the small case sets cold-case shops
+    actually run.
+
+    Returns: { case_id: [tag_dict, …] }. Tag dicts mirror the user-tag
+    shape so the same frontend chip renders both with no branching.
+    """
+    if not case_ids:
+        return {}
+
+    # signed-report — any Report on the case with status signed|exported
+    signed = Report.objects(
+        tenant_id=tenant_id, case__in=case_ids,
+        status__in=[ReportStatus.SIGNED.value, ReportStatus.EXPORTED.value],
+    ).only("case").distinct("case")
+    signed_ids = {str(c.id) for c in signed}
+
+    # discovery-exported — any case.discovery_exported audit event
+    disco_events = AuditEvent.objects(
+        tenant_id=tenant_id,
+        event_type=AuditEventType.CASE_DISCOVERY_EXPORTED.value,
+        case_id__in=case_ids,
+    ).only("case_id")
+    disco_ids = {e.case_id for e in disco_events}
+
+    # vendor-accessed — any vendor.access.used event
+    vendor_events = AuditEvent.objects(
+        tenant_id=tenant_id,
+        event_type=AuditEventType.VENDOR_ACCESS_USED.value,
+        case_id__in=case_ids,
+    ).only("case_id")
+    vendor_ids = {e.case_id for e in vendor_events}
+
+    # refusal-flagged — any assistant message with extra.refusal_detected on
+    # this case. Querying the nested `extra` field via mongoengine is fiddly,
+    # so we pull candidates and filter in process. The candidate set is
+    # already small (assistant messages per case).
+    refusal_ids: set[str] = set()
+    refusal_candidates = Message.objects(
+        tenant_id=tenant_id, role="assistant",
+    ).only("conversation", "extra")
+    for m in refusal_candidates:
+        if not getattr(m, "extra", None):
+            continue
+        if not m.extra.get("refusal_detected"):
+            continue
+        # Resolve the case via the conversation.
+        conv = m.conversation
+        cid = str(conv.case.id) if (conv and getattr(conv, "case", None)) else None
+        if cid in case_ids:
+            refusal_ids.add(cid)
+
+    out: dict[str, list[dict]] = {cid: [] for cid in case_ids}
+    def push(cid: str, *, slug: str, label: str, color: str, desc: str):
+        out.setdefault(cid, []).append({
+            "id": f"sys:{slug}",  # synthetic id — system tags aren't persisted
+            "label": label,
+            "slug": slug,
+            "description": desc,
+            "kind": "system",
+            "color": color,
+            "applicable_to": ["case"],
+            "created_by": "system",
+            "created_at": None,
+        })
+
+    for cid in signed_ids:
+        push(cid, slug="signed-report", label="Signed report",
+             color="emerald", desc="At least one §13663-compliant signed report exists.")
+    for cid in disco_ids:
+        push(cid, slug="discovery-exported", label="Discovery exported",
+             color="blue", desc="A discovery package has been generated for handoff.")
+    for cid in vendor_ids:
+        push(cid, slug="vendor-accessed", label="Vendor accessed",
+             color="red", desc="Vendor has accessed data on this case under §13663(d).")
+    for cid in refusal_ids:
+        push(cid, slug="refusal-flagged", label="Refusal flagged",
+             color="amber", desc="The AI hedged on document access for at least one message — review.")
+
+    return out
+
+
 @router.get("")
 @require_perm("case.read")
-def list_cases(user: CurrentUser = Depends(current_user)):
-    cases = Case.objects(tenant_id=user.tenant_id).order_by("-last_activity_at")
-    return {"cases": [c.to_dict() for c in cases]}
+def list_cases(
+    mine: bool = False,
+    limit: int = 100,
+    user: CurrentUser = Depends(current_user),
+):
+    """List cases the caller can see, newest activity first.
+
+    `mine=true` filters to cases where the caller is the primary investigator
+    (drives the dashboard "My cases" card).
+
+    Each case dict carries an embedded `tags` list (user + system tags
+    merged) so the case-list UI can render + filter without an N+1 round
+    trip. We resolve assignments + system tags once against the result
+    set and merge in-process.
+    """
+    q = Case.objects(tenant_id=user.tenant_id)
+    if mine:
+        q = q.filter(primary_investigator_id=user.user_id)
+    cases = list(q.order_by("-last_activity_at").limit(max(1, min(limit, 500))))
+
+    case_ids = [str(c.id) for c in cases]
+    assignments = TagAssignment.objects(
+        tenant_id=user.tenant_id,
+        subject_kind=TagSubjectKind.CASE.value,
+        subject_id__in=case_ids,
+    )
+    tag_ids = list({a.tag_id for a in assignments})
+    tag_by_id = {
+        str(t.id): t.to_dict()
+        for t in Tag.objects(tenant_id=user.tenant_id, id__in=tag_ids)
+    }
+    user_tags_by_case: dict[str, list[dict]] = {}
+    for a in assignments:
+        td = tag_by_id.get(a.tag_id)
+        if not td:
+            continue
+        user_tags_by_case.setdefault(a.subject_id, []).append(td)
+
+    system_tags_by_case = _compute_system_tags_by_case(user.tenant_id, case_ids)
+
+    out = []
+    for c in cases:
+        d = c.to_dict()
+        # User tags first, then system tags — order matters for chip order.
+        d["tags"] = user_tags_by_case.get(str(c.id), []) + system_tags_by_case.get(str(c.id), [])
+        out.append(d)
+    return {"cases": out}
 
 
 @router.post("", status_code=201)
@@ -90,6 +229,7 @@ def create_case(body: CreateCaseBody, user: CurrentUser = Depends(current_user))
             and retention == RetentionPolicy.MATCH_OFFICIAL_REPORT):
         retention = RetentionPolicy.INDEFINITE
 
+    ori = ext_id.current_agency_ori()
     case = Case(
         tenant_id=user.tenant_id,
         case_number=body.case_number,
@@ -100,6 +240,11 @@ def create_case(body: CreateCaseBody, user: CurrentUser = Depends(current_user))
         primary_investigator_id=user.user_id,
         co_investigator_ids=body.co_investigator_ids,
         created_by=user.user_id,
+        # Federated-system identifiers — composed once at create-time and
+        # never re-derived. See docs/design/workflow-and-ux.md §13.
+        external_id=ext_id.for_case(ori, body.case_number),
+        agency_ori_snapshot=ori,
+        date_of_incident=body.date_of_incident,
     ).save()
 
     case_audit.log(
@@ -121,8 +266,25 @@ def get_case(case_id: str, user: CurrentUser = Depends(current_user)):
         raise HTTPException(404, "Case not found")
     documents = Document.objects(case=case).order_by("-uploaded_at")
     media = MediaInput.objects(case=case).order_by("-registered_at")
+
+    # System tags computed lazily — keep the case hero in sync with the
+    # list view without persisting derived state.
+    sys_tags = _compute_system_tags_by_case(user.tenant_id, [case_id]).get(case_id, [])
+
+    # User tags on the case (same shape list_cases returns).
+    case_assignments = TagAssignment.objects(
+        tenant_id=user.tenant_id,
+        subject_kind=TagSubjectKind.CASE.value,
+        subject_id=case_id,
+    )
+    tag_ids = list({a.tag_id for a in case_assignments})
+    user_tags = [
+        t.to_dict()
+        for t in Tag.objects(tenant_id=user.tenant_id, id__in=tag_ids)
+    ]
+
     return {
-        "case": case.to_dict(),
+        "case": {**case.to_dict(), "tags": user_tags, "system_tags": sys_tags},
         "documents": [d.to_dict() for d in documents],
         "media": [m.to_dict() for m in media],
     }
@@ -148,6 +310,8 @@ def update_case(case_id: str, body: UpdateCaseBody, user: CurrentUser = Depends(
         case.description = body.description
     if body.co_investigator_ids is not None:
         case.co_investigator_ids = body.co_investigator_ids
+    if body.date_of_incident is not None:
+        case.date_of_incident = body.date_of_incident
     if body.status is not None:
         changes["status"] = (case.status, body.status.value)
         case.status = body.status.value
@@ -198,6 +362,10 @@ def _create_document_for_case(
         original_filename=original_filename, mime_type=mime_type,
         page_count=page_count, uploaded_by=user.user_id,
     ).save()
+    # Stamp the federated-system id now that we have a saved id to compose with.
+    if case.external_id:
+        document.external_id = ext_id.for_document(case.external_id, str(document.id))
+        document.save()
     case.last_activity_at = datetime.utcnow()
     case.save()
     case_audit.log_user_event(
@@ -381,6 +549,9 @@ def register_media(case_id: str, body: RegisterMediaBody, user: CurrentUser = De
         description=body.description,
         registered_by=user.user_id,
     ).save()
+    if case.external_id:
+        media.external_id = ext_id.for_media(case.external_id, str(media.id))
+        media.save()
 
     case.last_activity_at = datetime.utcnow()
     case.save()

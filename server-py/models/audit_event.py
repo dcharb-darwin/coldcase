@@ -39,6 +39,7 @@ class AuditEventType(str, Enum):
     VENDOR_ACCESS_SCOPE_VIOLATION = "vendor.access.scope_violation"
     PURGE_BLOCKED = "purge.blocked"             # §13663(b) refused a purge
     FIRST_DRAFT_MUTATION_BLOCKED = "first_draft.mutation_blocked"
+    RETENTION_SWEEP_COMPLETED = "retention.sweep_completed"
 
 
 class AuditEvent(MEDocument):

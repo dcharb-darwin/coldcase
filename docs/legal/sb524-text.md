@@ -51,7 +51,8 @@ A vendor that contracts with a law enforcement agency to provide AI services for
 
 ## Mapping to Cold Case
 
-See `docs/comprehensive-prd.md` §12 for the row-by-row compliance matrix and §7 for the business rules that operationalize each subdivision.
+- **City-attorney-readable status & gap assessment:** [`compliance-status.md`](./compliance-status.md) — current state, pilot-readiness punch list, open questions.
+- **Engineering detail:** `docs/comprehensive-prd.md` §12 row-by-row matrix; §7 business rules.
 
 ## To-do
 

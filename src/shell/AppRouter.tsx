@@ -1,4 +1,4 @@
-import { AdminPage, AuditPage, CaseDetailPage, CaseListPage } from "@/features";
+import { AdminPage, AuditPage, CaseDetailPage, CaseListPage, DashboardPage, ReportWorkspacePage } from "@/features";
 import { ImpersonationBanner } from "@/components";
 import AppShell from "./AppShell";
 import {
@@ -7,6 +7,8 @@ import {
   isAuditRoute,
   isCaseDetailRoute,
   isCaseListRoute,
+  isReportDetailRoute,
+  reportRouteIds,
   ROUTES,
 } from "./routes";
 import { useHashRoute } from "./useHashRoute";
@@ -18,6 +20,12 @@ export default function AppRouter() {
   let page;
   if (isAdminRoute(route)) {
     page = <AdminPage />;
+  } else if (isReportDetailRoute(route)) {
+    // Must match BEFORE isCaseDetailRoute since both share the /cases/ prefix.
+    const ids = reportRouteIds(route);
+    page = ids
+      ? <ReportWorkspacePage caseId={ids.caseId} reportId={ids.reportId} />
+      : <CaseListPage />;
   } else if (isCaseDetailRoute(route)) {
     const id = caseIdFromRoute(route);
     page = id ? <CaseDetailPage caseId={id} /> : <CaseListPage />;
@@ -26,7 +34,7 @@ export default function AppRouter() {
   } else if (isAuditRoute(route)) {
     page = <AuditPage />;
   } else if (route === ROUTES.dashboard) {
-    page = <CaseListPage />;
+    page = <DashboardPage />;
   } else {
     page = (
       <div style={{ padding: "var(--space-lg)" }}>

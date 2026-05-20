@@ -52,10 +52,10 @@ echo "   Mongo:     localhost:${MONGO_PORT}"
 echo ""
 
 if [ "$DETACHED" -eq 1 ]; then
-  docker compose up -d "${ARGS[@]}"
+  docker compose up -d ${ARGS[@]+"${ARGS[@]}"}
   echo ""
   echo "Tail logs:  docker compose logs -f"
   echo "Stop:       docker compose down"
 else
-  docker compose up "${ARGS[@]}"
+  docker compose up ${ARGS[@]+"${ARGS[@]}"}
 fi

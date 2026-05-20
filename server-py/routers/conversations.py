@@ -42,6 +42,12 @@ class SendMessageBody(BaseModel):
     in_context_media_ids: list[str] = Field(default_factory=list)
 
 
+class PatchMessageBody(BaseModel):
+    content: Optional[str] = None
+    # Any other future fields go here. The endpoint denies everything for
+    # first-AI-draft messages regardless of which fields are set.
+
+
 # ── Endpoints ───────────────────────────────────────────────────────────────
 
 
@@ -73,6 +79,57 @@ def list_conversations(case_id: str, user: CurrentUser = Depends(current_user)):
         raise HTTPException(404, "Case not found")
     convs = Conversation.objects(case=case).order_by("-last_message_at")
     return {"conversations": [c.to_dict() for c in convs]}
+
+
+@router.patch("/messages/{message_id}", status_code=403)
+@require_perm("conversation.read")
+def patch_message(message_id: str, body: PatchMessageBody, user: CurrentUser = Depends(current_user)):
+    """§13663(b) deny path: the first AI draft is immutable for as long as
+    the linked official report is retained, and drafts cannot be edited to
+    become "the officer's statement." This endpoint exists specifically to
+    audit attempts to mutate a first draft. Non-first-draft messages are
+    also not editable today (the conversation is append-only by design),
+    but they return 405 — only first-draft attempts emit the statutory
+    audit event."""
+    msg = Message.objects(id=message_id, tenant_id=user.tenant_id).first()
+    if not msg:
+        raise HTTPException(404, "Message not found")
+
+    if msg.is_first_ai_draft:
+        conv = msg.conversation
+        case_id = str(conv.case.id) if (conv and getattr(conv, "case", None)) else None
+        case_audit.log_user_event(
+            user,
+            event_type=AuditEventType.FIRST_DRAFT_MUTATION_BLOCKED,
+            case_id=case_id,
+            conversation_id=str(conv.id) if conv else None,
+            message_id=str(msg.id),
+            report_id=msg.first_draft_locked_for_report_id,
+            summary=(
+                f"Mutation attempt on §13663(b) first AI draft "
+                f"(message {msg.id}) blocked"
+            ),
+            detail={
+                "attempted_fields": [k for k, v in body.model_dump().items() if v is not None],
+                "first_draft_locked_for_report_id": msg.first_draft_locked_for_report_id,
+            },
+        )
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "First AI draft messages are immutable per California Penal "
+                "Code §13663(b) for as long as the linked official report is "
+                "retained. This attempt has been audited."
+            ),
+        )
+
+    raise HTTPException(
+        status_code=405,
+        detail=(
+            "Editing chat messages is not supported. Conversations are "
+            "append-only; create a new prompt instead."
+        ),
+    )
 
 
 @router.get("/conversations/{conversation_id}/messages")

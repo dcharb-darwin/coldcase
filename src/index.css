@@ -110,62 +110,81 @@
 }
 
 /* ── Base Reset & Typography ─────────────────────────────── */
-*,
-*::before,
-*::after {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
-}
+/*
+ * Everything in this block lives inside `@layer base` so Tailwind v4
+ * utilities (emitted in the `utilities` cascade layer) outrank our
+ * element-level defaults. Without the wrapper, Tailwind v4's
+ * :where()-shielded utilities have the SAME specificity as bare element
+ * selectors and lose the cascade tiebreaker (source order). That makes
+ * every `px-*` / `text-white` / `bg-*` utility silently no-op when the
+ * element targets one of these defaults.
+ *
+ * Lessons learned the hard way:
+ *   - `*  { padding: 0 }` ate every Tailwind padding utility.
+ *   - `a { color: var(--color-primary) }` made `text-white` invisible on
+ *     filled <a> buttons (blue text on blue/orange/dark backgrounds).
+ *
+ * Anything that targets a bare element (h1, a, label, code, etc.) MUST
+ * stay in this block. Class-scoped rules (.btn, .darwin-card) are fine
+ * outside — they already outrank :where()-wrapped utilities by class
+ * specificity alone.
+ */
+@layer base {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
 
-html {
-  font-size: 16px;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
+  html {
+    font-size: 16px;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
 
-body {
-  font-family: var(--font-body);
-  font-size: 0.875rem;
-  line-height: 1.6;
-  color: var(--color-text);
-  background: var(--color-bg);
-}
+  body {
+    font-family: var(--font-body);
+    font-size: 0.875rem;
+    line-height: 1.6;
+    color: var(--color-text);
+    background: var(--color-bg);
+  }
 
-h1, h2, h3, h4 {
-  font-family: var(--font-heading);
-  font-weight: 700;
-  line-height: 1.25;
-  letter-spacing: -0.02em;
-  color: var(--color-text);
-}
+  h1, h2, h3, h4 {
+    font-family: var(--font-heading);
+    font-weight: 700;
+    line-height: 1.25;
+    letter-spacing: -0.02em;
+    color: var(--color-text);
+  }
 
-h1 { font-size: 1.875rem; }
-h2 { font-size: 1.5rem; }
-h3 { font-size: 1.25rem; }
-h4 { font-size: 1rem; }
+  h1 { font-size: 1.875rem; }
+  h2 { font-size: 1.5rem; }
+  h3 { font-size: 1.25rem; }
+  h4 { font-size: 1rem; }
 
-code, pre, .font-mono {
-  font-family: var(--font-mono);
-  font-size: 0.8125rem;
-  line-height: 1.5;
-  letter-spacing: 0.02em;
-}
+  code, pre, .font-mono {
+    font-family: var(--font-mono);
+    font-size: 0.8125rem;
+    line-height: 1.5;
+    letter-spacing: 0.02em;
+  }
 
-/* ── Focus Ring ──────────────────────────────────────────── */
-:focus-visible {
-  outline: 2px solid var(--color-primary);
-  outline-offset: 2px;
-}
+  :focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
+  }
 
-/* ── Links ───────────────────────────────────────────────── */
-a {
-  color: var(--color-primary);
-  text-decoration: none;
-  transition: color var(--transition-fast);
-}
-a:hover {
-  color: var(--color-primary-hover);
+  a {
+    color: var(--color-primary);
+    text-decoration: none;
+    transition: color var(--transition-fast);
+  }
+  a:hover {
+    color: var(--color-primary-hover);
+  }
 }
 
 /* ── Darwin Card ─────────────────────────────────────────── */
@@ -535,12 +554,14 @@ a:hover {
   margin-top: var(--space-xs);
 }
 
-label {
-  display: block;
-  font-size: 0.8125rem;
-  font-weight: 500;
-  color: var(--color-text-secondary);
-  margin-bottom: var(--space-xs);
+@layer base {
+  label {
+    display: block;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: var(--color-text-secondary);
+    margin-bottom: var(--space-xs);
+  }
 }
 
 /* ── Tables ──────────────────────────────────────────────── */

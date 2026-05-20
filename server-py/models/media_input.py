@@ -54,10 +54,14 @@ class MediaInput(MEDocument):
     registered_by = StringField(required=True)
     registered_at = DateTimeField(default=datetime.utcnow)
 
+    # Stable id for federated systems. Defaults to `{case.external_id}:media:{id}`.
+    external_id = StringField()
+
     def to_dict(self) -> dict:
         return {
             "id": str(self.id),
             "case_id": str(self.case.id) if self.case else None,
+            "external_id": self.external_id or "",
             "storage_uri": self.storage_uri,
             "sha256": self.sha256,
             "source_type": self.source_type,

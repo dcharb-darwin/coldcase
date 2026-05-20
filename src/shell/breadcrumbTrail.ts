@@ -20,7 +20,7 @@ export function breadcrumbTrail(path: string, _options?: BreadcrumbTrailOptions)
   if (isCaseDetailRoute(path)) {
     return [
       { label: "Cases", path: ROUTES.cases },
-      { label: "Case detail", path: null },
+      { label: _options?.detailLabel || "Case", path: null },
     ];
   }
   if (isCaseListRoute(path)) {

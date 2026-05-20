@@ -5,7 +5,7 @@ from datetime import datetime
 from enum import Enum
 
 from mongoengine import (
-    Document as MEDocument, StringField, DateTimeField, ListField, BooleanField,
+    Document as MEDocument, StringField, DateTimeField, DateField, ListField, BooleanField,
 )
 
 
@@ -39,9 +39,20 @@ class Case(MEDocument):
         "collection": "cases",
         "indexes": [
             {"fields": ["tenant_id", "case_number"], "unique": True},
+            # Partial index — only enforces uniqueness when external_id is set
+            # and non-empty. Avoids the multi-null collision that plagues
+            # compound `sparse: true` indexes in MongoDB.
+            {
+                "fields": ["tenant_id", "external_id"],
+                "unique": True,
+                "partialFilterExpression": {
+                    "external_id": {"$exists": True, "$gt": ""}
+                },
+            },
             "status",
             "classification",
             ("tenant_id", "-created_at"),
+            ("tenant_id", "primary_investigator_id", "-last_activity_at"),
         ],
     }
 
@@ -68,6 +79,20 @@ class Case(MEDocument):
 
     description = StringField(default="")
 
+    # Date the underlying incident occurred — distinct from `created_at`,
+    # which is when the case was registered in Cold Case. Future
+    # evidence.com export sends this as `incident_date`.
+    date_of_incident = DateField()
+
+    # Stable per-artifact identifier for federated systems (evidence.com,
+    # records-management, future destinations). Defaults to
+    # `{agency_ori}:{case_number}` at create-time so the id never changes
+    # if the agency ORI env later updates.
+    external_id = StringField()
+    # Snapshot of the agency ORI at case-creation time. Don't read live env
+    # at push time — agencies can move tenants.
+    agency_ori_snapshot = StringField(default="")
+
     created_by = StringField(required=True)
     created_at = DateTimeField(default=datetime.utcnow)
     closed_at = DateTimeField()
@@ -78,6 +103,8 @@ class Case(MEDocument):
         return {
             "id": str(self.id),
             "case_number": self.case_number,
+            "external_id": self.external_id or "",
+            "agency_ori_snapshot": self.agency_ori_snapshot or "",
             "title": self.title,
             "classification": self.classification,
             "status": self.status,
@@ -85,6 +112,7 @@ class Case(MEDocument):
             "primary_investigator_id": self.primary_investigator_id,
             "co_investigator_ids": list(self.co_investigator_ids or []),
             "description": self.description,
+            "date_of_incident": self.date_of_incident.isoformat() if self.date_of_incident else None,
             "created_by": self.created_by,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "closed_at": self.closed_at.isoformat() if self.closed_at else None,

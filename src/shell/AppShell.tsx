@@ -3,7 +3,7 @@ import { useCallback, useMemo, useState } from "react";
 import { usePermission } from "@/launchpad-admin";
 import { breadcrumbTrail } from "./breadcrumbTrail";
 import { isAdminRoute, isAuditRoute, isCaseDetailRoute, isCaseListRoute, ROUTES, setHashPath } from "./routes";
-import { readNavCollapsedFromStorage, ShellChromeProvider, writeNavCollapsedToStorage } from "./ShellChromeContext";
+import { readNavCollapsedFromStorage, ShellChromeProvider, useShellChrome, writeNavCollapsedToStorage } from "./ShellChromeContext";
 
 type AppShellProps = {
   route: string;
@@ -58,7 +58,11 @@ export default function AppShell({ route, children }: AppShellProps) {
 
 function AppShellChrome({ route, children }: AppShellProps) {
   const [collapsed, setCollapsed] = useState(readNavCollapsedFromStorage);
-  const crumbs = useMemo(() => breadcrumbTrail(route, {}), [route]);
+  const { detailLabel } = useShellChrome();
+  const crumbs = useMemo(
+    () => breadcrumbTrail(route, { detailLabel }),
+    [route, detailLabel],
+  );
   const onDashboard = route === ROUTES.dashboard;
   const onCases = isCaseListRoute(route) || isCaseDetailRoute(route);
   const onAudit = isAuditRoute(route);
@@ -169,9 +173,9 @@ function AppShellChrome({ route, children }: AppShellProps) {
               </span>
             ))}
           </div>
-          <div className="app-shell__topbar-actions">
-            <span className="app-shell__avatar" title="Account">{"COL"}</span>
-          </div>
+          {/* Topbar-right intentionally empty for now — user identity is on
+              Admin > My Access. Single "COL" mark lives in the nav rail. */}
+          <div className="app-shell__topbar-actions" />
         </header>
         <main className="app-shell__main">{children}</main>
       </div>

@@ -1,8 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useMemo, useState } from "react";
+
+// Test-fixture case numbers we hide from the list by default so the
+// detective doesn't open the app and see a screen full of smoke-test rows.
+// The toggle on the toolbar restores them for QA work.
+const TEST_FIXTURE_PREFIX = /^(SMOKE|F\d|CC-SMOKE)/i;
 import {
   createCase,
   listCases,
+  listTags,
   seedCivilRightsCases,
   seedSyntheticDemo,
   type CaseClassification,
@@ -10,6 +16,7 @@ import {
 } from "@/lib/api/coldcase";
 import { caseKeys } from "../queryKeys";
 import { ROUTES, setHashPath } from "@/shell/routes";
+import { TagChip } from "../components/TagChips";
 
 const CLASSIFICATIONS: { value: CaseClassification; label: string }[] = [
   { value: "homicide", label: "Homicide" },
@@ -153,12 +160,69 @@ function CreateCaseModal({ open, onClose }: { open: boolean; onClose: () => void
 export default function CaseListPage() {
   const qc = useQueryClient();
   const [createOpen, setCreateOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [classFilter, setClassFilter] = useState<"" | CaseClassification>("");
+  const [showTestCases, setShowTestCases] = useState(false);
+  // Multi-tag AND filter: a case must carry every selected tag slug to show.
+  const [activeTagSlugs, setActiveTagSlugs] = useState<string[]>([]);
+
   const { data: cases = [], isLoading, error } = useQuery({
     queryKey: caseKeys.list(),
-    queryFn: listCases,
+    queryFn: () => listCases(),
     refetchOnMount: "always",
     staleTime: 0,
   });
+
+  const { data: vocab = [] } = useQuery({
+    queryKey: ["tags", "vocab"],
+    queryFn: listTags,
+    staleTime: 5 * 60_000,
+  });
+
+  // Filter chips show only tags that are actually in use on the current set
+  // of cases — keeps the row from advertising tags that would return zero
+  // matches. Combines vocabulary (user tags) with system tags pulled
+  // straight from the cases (which are not in `vocab`).
+  const inUseTags = useMemo(() => {
+    const seen = new Map<string, { slug: string; label: string; kind: "user" | "system" }>();
+    for (const c of cases) {
+      for (const t of c.tags ?? []) {
+        if (!seen.has(t.slug)) {
+          seen.set(t.slug, { slug: t.slug, label: t.label, kind: t.kind });
+        }
+      }
+    }
+    // Order: user tags first (alpha), then system tags (alpha).
+    return [...seen.values()].sort((a, b) => {
+      if (a.kind !== b.kind) return a.kind === "user" ? -1 : 1;
+      return a.label.localeCompare(b.label);
+    });
+  }, [cases]);
+  // Vocab is still useful for descriptions in tooltips on the filter chips.
+  const vocabBySlug = useMemo(() => {
+    const m = new Map<string, string>();
+    vocab.forEach((t) => m.set(t.slug, t.description));
+    return m;
+  }, [vocab]);
+
+  const toggleTag = (slug: string) => setActiveTagSlugs((prev) =>
+    prev.includes(slug) ? prev.filter((s) => s !== slug) : [...prev, slug],
+  );
+
+  const filteredCases = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return cases.filter((c) => {
+      if (!showTestCases && TEST_FIXTURE_PREFIX.test(c.case_number)) return false;
+      if (classFilter && c.classification !== classFilter) return false;
+      if (q && !c.case_number.toLowerCase().includes(q) && !c.title.toLowerCase().includes(q)) return false;
+      if (activeTagSlugs.length) {
+        const have = new Set((c.tags ?? []).map((t) => t.slug));
+        if (!activeTagSlugs.every((s) => have.has(s))) return false;
+      }
+      return true;
+    });
+  }, [cases, query, classFilter, showTestCases, activeTagSlugs]);
+  const hiddenCount = cases.length - filteredCases.length;
 
   const seedMutation = useMutation({
     mutationFn: () => seedSyntheticDemo(),
@@ -218,6 +282,76 @@ export default function CaseListPage() {
       {isLoading ? <div className="text-slate-500">Loading cases…</div> : null}
       {error ? <div className="text-red-700">{(error as Error).message}</div> : null}
 
+      {cases.length > 0 ? (
+        <div className="flex flex-wrap items-center gap-2 mb-3 text-sm">
+          <input
+            type="search"
+            placeholder="Search case number or title…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            className="flex-1 min-w-[220px] max-w-md border border-slate-300 rounded px-3 py-1.5"
+          />
+          <select
+            value={classFilter}
+            onChange={(e) => setClassFilter(e.target.value as "" | CaseClassification)}
+            className="border border-slate-300 rounded px-2 py-1.5 bg-white"
+          >
+            <option value="">All classifications</option>
+            {CLASSIFICATIONS.map((c) => (
+              <option key={c.value} value={c.value}>{c.label}</option>
+            ))}
+          </select>
+          <label className="flex items-center gap-1.5 text-xs text-slate-700 ml-1">
+            <input
+              type="checkbox"
+              checked={showTestCases}
+              onChange={(e) => setShowTestCases(e.target.checked)}
+            />
+            <span>Show test fixtures</span>
+          </label>
+          <span className="ml-auto text-xs text-slate-500">
+            {filteredCases.length} of {cases.length} cases
+            {hiddenCount > 0 ? ` · ${hiddenCount} hidden by filter` : ""}
+          </span>
+        </div>
+      ) : null}
+
+      {inUseTags.length > 0 ? (
+        <div className="flex flex-wrap items-center gap-1.5 mb-3">
+          <span className="text-[11px] text-slate-500 mr-1">Filter by tag:</span>
+          {inUseTags.map((t) => {
+            const active = activeTagSlugs.includes(t.slug);
+            const isSystem = t.kind === "system";
+            return (
+              <button
+                key={t.slug}
+                type="button"
+                onClick={() => toggleTag(t.slug)}
+                className={
+                  "inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[11px] font-medium transition-colors " +
+                  (active
+                    ? "bg-blue-600 text-white border-blue-600 hover:bg-blue-700"
+                    : "bg-white text-slate-700 border-slate-300 hover:bg-slate-50")
+                }
+                title={vocabBySlug.get(t.slug) ?? t.label}
+              >
+                <span className="opacity-70">{isSystem ? "🔒" : "#"}</span>
+                {t.label}
+              </button>
+            );
+          })}
+          {activeTagSlugs.length > 0 ? (
+            <button
+              type="button"
+              onClick={() => setActiveTagSlugs([])}
+              className="text-[11px] text-slate-500 hover:text-slate-800 ml-1 underline"
+            >
+              clear
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+
       {!isLoading && cases.length === 0 ? (
         <div className="border border-dashed border-slate-300 rounded-lg p-10 text-center text-slate-500">
           No cases yet. Create one to begin.
@@ -238,15 +372,30 @@ export default function CaseListPage() {
               </tr>
             </thead>
             <tbody>
-              {cases.map((c) => (
+              {filteredCases.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="px-4 py-8 text-center text-sm text-slate-500">
+                    No cases match the current filter.
+                  </td>
+                </tr>
+              ) : filteredCases.map((c) => (
                 <tr
                   key={c.id}
                   onClick={() => setHashPath(`${ROUTES.casePrefix}${c.id}`)}
                   className="border-t border-slate-100 hover:bg-slate-50 cursor-pointer"
                 >
-                  <td className="px-4 py-2 font-mono text-xs">{c.case_number}</td>
-                  <td className="px-4 py-2">{c.title}</td>
-                  <td className="px-4 py-2"><ClassificationBadge value={c.classification} /></td>
+                  <td className="px-4 py-2 font-mono text-xs align-top">{c.case_number}</td>
+                  <td className="px-4 py-2 align-top">
+                    <div>{c.title}</div>
+                    {c.tags && c.tags.length > 0 ? (
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {c.tags.map((t) => (
+                          <TagChip key={t.id} tag={t} />
+                        ))}
+                      </div>
+                    ) : null}
+                  </td>
+                  <td className="px-4 py-2 align-top"><ClassificationBadge value={c.classification} /></td>
                   <td className="px-4 py-2"><StatusBadge status={c.status} /></td>
                   <td className="px-4 py-2 text-xs text-slate-600">{c.retention_policy}</td>
                   <td className="px-4 py-2 text-xs text-slate-500">

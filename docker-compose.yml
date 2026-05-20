@@ -64,6 +64,9 @@ services:
       # via this mount; no separate named volume needed (and a named volume
       # here would shadow the source-mounted uploads dir).
       - ./server-py:/app
+      # Mount the legal docs read-only so the compliance preflight check
+      # can verify the agency policy template ships with the deployment.
+      - ./docs/legal:/srv/docs/legal:ro
     depends_on:
       mongo:
         condition: service_healthy

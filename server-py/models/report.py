@@ -133,6 +133,15 @@ class Report(MEDocument):
     export_target = StringField(default="")  # "evidence.com" | "file" | …
     exported_at = DateTimeField()
 
+    # Federated-system identifiers. `external_id` is the stable id (defaults
+    # to `{case.external_id}:report:{id}`) used when pushing this report to
+    # evidence.com or any other downstream system. `evidence_com_asset_id`
+    # and `evidence_com_pushed_at` are reserved fields populated by the
+    # future integration — see docs/design/workflow-and-ux.md §13.
+    external_id = StringField()
+    evidence_com_asset_id = StringField(default="")
+    evidence_com_pushed_at = DateTimeField()
+
     # Lineage
     supersedes_report_id = StringField()  # if this is a revision of an earlier signed report
 
@@ -176,6 +185,9 @@ class Report(MEDocument):
             "chain_artifact_uri": self.chain_artifact_uri,
             "export_target": self.export_target,
             "exported_at": self.exported_at.isoformat() if self.exported_at else None,
+            "external_id": self.external_id or "",
+            "evidence_com_asset_id": self.evidence_com_asset_id or "",
+            "evidence_com_pushed_at": self.evidence_com_pushed_at.isoformat() if self.evidence_com_pushed_at else None,
             "supersedes_report_id": self.supersedes_report_id,
             "created_by": self.created_by,
             "created_at": self.created_at.isoformat() if self.created_at else None,

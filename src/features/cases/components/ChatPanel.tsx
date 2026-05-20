@@ -13,6 +13,7 @@ import {
 } from "@/lib/api/coldcase";
 import { caseKeys, conversationKeys } from "../queryKeys";
 import CitationText from "./CitationText";
+import { CaseTagBar } from "./TagChips";
 
 interface ChatPanelProps {
   caseId: string;
@@ -261,6 +262,12 @@ export default function ChatPanel({ caseId, documents, media, onPromote, onCitat
                     onCitationClick={onCitationClick}
                     knownFilenames={documents.map((d) => d.original_filename)}
                   />
+                  {/* Per-message tag bar — lets the detective mark "use this"
+                      / "exculpatory" / etc. without leaving chat. User prompts
+                      don't get a bar (transient — promote/regen is enough). */}
+                  <div className="mt-2 pt-2 border-t border-slate-200/60">
+                    <CaseTagBar caseId={caseId} subjectKind="message" subjectId={m.id} />
+                  </div>
                 </>
               ) : (
                 <div className="whitespace-pre-wrap leading-relaxed">{m.content}</div>

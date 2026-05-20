@@ -26,7 +26,7 @@ from models.report import (
     REVISION_NOTE_AI_FIRST_DRAFT, REVISION_NOTE_INITIAL_OVERRIDE, REVISION_NOTE_OFFICER_EDIT,
 )
 from routers._deps import CurrentUser, current_user, require_perm
-from services import case_audit
+from services import case_audit, external_id as ext_id
 from services.chain_export import export_chain_pdf
 from services.diff_export import compute_diff, export_diff_pdf
 from services.report_export import export_report_pdf
@@ -145,6 +145,10 @@ def promote_message_to_report(body: PromoteBody, user: CurrentUser = Depends(cur
         revisions=revisions,
         created_by=user.user_id,
     ).save()
+    # Stamp the federated-system id once the saved id exists.
+    if case.external_id:
+        report.external_id = ext_id.for_report(case.external_id, str(report.id))
+        report.save()
 
     # Lock the message as the §13663(b) first draft.
     msg.is_first_ai_draft = True
@@ -361,6 +365,11 @@ def sign_report(report_id: str, body: SignBody, user: CurrentUser = Depends(curr
     report.signed_at = now
     report.status = ReportStatus.SIGNED.value
     report.save()
+
+    # Surface the action on the case so the dashboard / list views see it.
+    if report.case:
+        report.case.last_activity_at = now
+        report.case.save()
 
     case_audit.log(
         tenant_id=user.tenant_id, user_id=user.user_id,

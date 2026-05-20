@@ -5,6 +5,7 @@ export const caseKeys = {
   conversations: (id: string) => ["cases", id, "conversations"] as const,
   reports: (id: string) => ["cases", id, "reports"] as const,
   auditSummary: (id: string) => ["cases", id, "audit-summary"] as const,
+  tags: (id: string) => ["cases", id, "tags"] as const,
 };
 
 export const conversationKeys = {

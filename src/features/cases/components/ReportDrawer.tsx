@@ -153,7 +153,7 @@ function phaseForStatus(status: Report["status"]): Phase {
   return "review";
 }
 
-function ReportWorkspace({
+export function ReportWorkspace({
   caseId,
   reportId,
   onClose,
@@ -353,7 +353,7 @@ function FirstDraftPanel({
 }: { report: Report; onCitationClick: (f: string, l: number) => void }) {
   return (
     <section className="p-4 border-b border-slate-200">
-      <div className="text-[11px] uppercase tracking-wide font-semibold text-amber-900 mb-1">
+      <div className="text-[12px] font-semibold text-amber-900 mb-1">
         §13663(b) First AI draft
       </div>
       <div className="text-[11px] text-slate-500 mb-2 italic">
@@ -375,7 +375,7 @@ function RevisionTimeline({
   const [openSeq, setOpenSeq] = useState<number | null>(null);
   return (
     <section className="p-4">
-      <div className="text-[11px] uppercase tracking-wide font-semibold text-slate-700 mb-2">
+      <div className="text-[12px] font-semibold text-slate-700 mb-2">
         Revisions ({revisions.length})
       </div>
       <ol className="space-y-1.5">
@@ -441,7 +441,7 @@ function RefinePanel({
   return (
     <div className="p-6 space-y-4">
       <label className="block">
-        <span className="text-xs uppercase tracking-wide font-semibold text-slate-700">Title</span>
+        <span className="text-[12px] font-semibold text-slate-700">Title</span>
         <input
           className="mt-1 w-full border border-slate-300 rounded px-2 py-1.5 text-sm disabled:bg-slate-100"
           value={title}
@@ -452,7 +452,7 @@ function RefinePanel({
 
       <div>
         <div className="flex items-baseline justify-between mb-1">
-          <span className="text-xs uppercase tracking-wide font-semibold text-slate-700">
+          <span className="text-[12px] font-semibold text-slate-700">
             Report body {isDraft ? "" : "(locked)"}
           </span>
           {isDraft ? (
@@ -486,7 +486,7 @@ function RefinePanel({
       ) : null}
 
       <div>
-        <div className="text-xs uppercase tracking-wide font-semibold text-slate-700 mb-1">
+        <div className="text-[12px] font-semibold text-slate-700 mb-1">
           {isDraft ? "Live preview" : "Signed text"}
         </div>
         <div className="border border-slate-300 rounded px-3 py-2 text-sm bg-slate-50 max-h-72 overflow-y-auto">
@@ -557,7 +557,7 @@ function ReviseToolbar({
   return (
     <div className="rounded border border-blue-200 bg-blue-50/40 p-3">
       <div className="flex items-center justify-between mb-2">
-        <span className="text-xs uppercase tracking-wide font-semibold text-blue-900">
+        <span className="text-[12px] font-semibold text-blue-900">
           🤖 Ask AI to revise
         </span>
         <span className="text-[11px] text-blue-900/70">
@@ -662,7 +662,7 @@ function EditorialWorkPanel({ report }: { report: Report }) {
   });
   return (
     <section className="rounded border border-slate-200 bg-white p-3">
-      <div className="text-xs uppercase tracking-wide font-semibold text-slate-700 mb-1">
+      <div className="text-[12px] font-semibold text-slate-700 mb-1">
         Editorial work — what you changed from the AI's first draft
       </div>
       {isLoading ? <div className="text-xs text-slate-500">Computing diff…</div> : null}
@@ -705,7 +705,7 @@ function EditorialWorkPanel({ report }: { report: Report }) {
 function DisclosurePanel({ report }: { report: Report }) {
   return (
     <section className="p-4 border-b border-slate-200">
-      <div className="text-[11px] uppercase tracking-wide font-semibold text-amber-900 mb-1">
+      <div className="text-[12px] font-semibold text-amber-900 mb-1">
         AI disclosure (§13663(a)(1))
       </div>
       <div className="rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-900">
@@ -739,7 +739,7 @@ function SignaturePanel({
 }) {
   return (
     <section className="p-4 border-b border-slate-200">
-      <div className="text-[11px] uppercase tracking-wide font-semibold text-slate-700 mb-1">
+      <div className="text-[12px] font-semibold text-slate-700 mb-1">
         Sign (§13663(a)(2))
       </div>
       <div className="text-[11px] text-slate-600 mb-2">
@@ -784,7 +784,7 @@ function SignedPanel({ report }: { report: Report }) {
   if (!report.signature) return null;
   return (
     <section className="p-4 border-b border-slate-200">
-      <div className="text-[11px] uppercase tracking-wide font-semibold text-emerald-700 mb-1">
+      <div className="text-[12px] font-semibold text-emerald-700 mb-1">
         ✓ Signed (§13663(a)(2))
       </div>
       <div className="text-xs space-y-0.5">
@@ -823,7 +823,7 @@ function DeliverPanel({
   const exported = report.status === "exported";
   return (
     <section className="p-4">
-      <div className="text-[11px] uppercase tracking-wide font-semibold text-blue-700 mb-2">
+      <div className="text-[12px] font-semibold text-blue-700 mb-2">
         Deliver
       </div>
       {!exported ? (
@@ -930,7 +930,7 @@ function EvidenceComHandoff({ report }: { report: Report }) {
 
   return (
     <div className="mt-3 pt-3 border-t border-slate-200">
-      <div className="text-[11px] uppercase tracking-wide font-semibold text-slate-700 mb-1">
+      <div className="text-[12px] font-semibold text-slate-700 mb-1">
         Next: file in evidence.com
       </div>
       <div className="text-[11px] text-slate-600 mb-2 leading-snug">

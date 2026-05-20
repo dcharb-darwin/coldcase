@@ -11,6 +11,8 @@ from models.audit_event import AuditEvent, AuditEventType
 from models.vendor_access import (
     VendorAccessRequest, VendorAccessPurpose, VendorAccessScopeKind, VendorAccessStatus,
 )
+from models.tag import Tag, TagAssignment, TagKind, TagSubjectKind, TAG_COLOR_CHOICES
+from models.person import Person, PersonRole
 
 __all__ = [
     "Case", "CaseStatus", "CaseClassification", "RetentionPolicy",
@@ -22,4 +24,6 @@ __all__ = [
     "Approval",
     "AuditEvent", "AuditEventType",
     "VendorAccessRequest", "VendorAccessPurpose", "VendorAccessScopeKind", "VendorAccessStatus",
+    "Tag", "TagAssignment", "TagKind", "TagSubjectKind", "TAG_COLOR_CHOICES",
+    "Person", "PersonRole",
 ]

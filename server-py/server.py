@@ -34,7 +34,22 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
         seed_all(DEV_TENANT_ID, DEV_USER_ID, APP_MANIFEST.app_id)
     except Exception as exc:  # noqa: BLE001 — never block startup
         logger.warning("Launchpad Admin seeding failed: %s", exc)
+
+    # Daily retention sweeper — §13663(b) floor enforcement. Without this
+    # the sweeper service is dead code; preflight asserts it's running.
+    try:
+        from services import retention_scheduler
+        retention_scheduler.start()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Retention scheduler failed to start: %s", exc)
+
     yield
+
+    try:
+        from services import retention_scheduler
+        await retention_scheduler.stop()
+    except Exception:  # noqa: BLE001
+        pass
     close_database()
 
 
@@ -100,6 +115,9 @@ def create_app() -> FastAPI:
     from routers.prompts import router as prompts_router
     from routers.vendor_access import router as vendor_access_router
     from routers.admin_retention import router as admin_retention_router
+    from routers.admin_compliance import router as admin_compliance_router
+    from routers.tags import router as tags_router
+    from routers.persons import router as persons_router
     from seed.synthetic_case import router as demo_router
     from seed.civil_rights_cases import router as civil_rights_router
     application.include_router(cases_router, prefix=api_prefix)
@@ -109,6 +127,9 @@ def create_app() -> FastAPI:
     application.include_router(prompts_router, prefix=api_prefix)
     application.include_router(vendor_access_router, prefix=api_prefix)
     application.include_router(admin_retention_router, prefix=api_prefix)
+    application.include_router(admin_compliance_router, prefix=api_prefix)
+    application.include_router(tags_router, prefix=api_prefix)
+    application.include_router(persons_router, prefix=api_prefix)
     application.include_router(demo_router, prefix=api_prefix)
     application.include_router(civil_rights_router, prefix=api_prefix)
 
