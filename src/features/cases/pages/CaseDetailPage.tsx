@@ -14,8 +14,10 @@ import {
   deleteTimelineEntry,
   getAuditChainReport,
   getCaseConnections,
+  getPersonMentions,
   getPersonNetwork,
   getReportChain,
+  getSimilarCases,
   listAuditEvents,
   listConversations,
   listPersons,
@@ -476,6 +478,8 @@ function BriefTab({
 
         <CaseConnectionsPanel caseId={c.id} />
 
+        <SimilarCasesPanel caseId={c.id} />
+
         {/* Tags — grouped (detective-applied + server-derived) with an
             inline AI suggestion affordance. */}
         <section>
@@ -934,6 +938,69 @@ function NextStepSuggester({ caseId }: { caseId: string }) {
   );
 }
 
+function SimilarCasesPanel({ caseId }: { caseId: string }) {
+  // Tag-based Jaccard similarity. Quiet by default — only renders when
+  // there's a non-zero overlap. Goes next to Connections because both
+  // panels answer "what other cases should I look at?" — one via people,
+  // the other via shared classification work.
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["similar-cases", caseId],
+    queryFn: () => getSimilarCases(caseId),
+    staleTime: 60_000,
+  });
+  if (isLoading || error || !data || data.similar.length === 0) return null;
+
+  return (
+    <section>
+      <div className="flex items-baseline justify-between mb-2">
+        <h2 className="text-[15px] font-semibold text-slate-900">Similar cases</h2>
+        <span className="text-[11px] text-slate-500">
+          {data.similar.length} match{data.similar.length === 1 ? "" : "es"} · ranked by shared tags
+        </span>
+      </div>
+      <ul className="space-y-1.5">
+        {data.similar.map((c) => {
+          const isDanger = c.case_classification === "homicide"
+            || c.case_classification === "sexual_assault";
+          return (
+            <li key={c.case_id}>
+              <button
+                type="button"
+                onClick={() => setHashPath(`${ROUTES.casePrefix}${c.case_id}`)}
+                className="w-full text-left border border-slate-200 rounded p-2.5 bg-white hover:border-blue-400 hover:bg-blue-50/40"
+              >
+                <div className="flex items-baseline gap-2">
+                  <span className="font-mono text-xs text-slate-700">{c.case_number}</span>
+                  <span className="text-sm text-slate-900 truncate flex-1">{c.case_title}</span>
+                  <span className={
+                    "text-[11px] capitalize " +
+                    (isDanger ? "text-red-700 font-medium" : "text-slate-500")
+                  }>
+                    {c.case_classification.replace("_", " ")}
+                  </span>
+                  <span className="text-[11px] font-mono text-slate-500">
+                    {Math.round(c.score * 100)}%
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-1 mt-1.5">
+                  {c.shared_tag_labels.map((lbl) => (
+                    <span
+                      key={lbl}
+                      className="inline-flex items-center px-1.5 py-0.5 rounded-full border border-slate-200 bg-slate-50 text-slate-700 text-[10px]"
+                    >
+                      <span className="opacity-60 mr-0.5">#</span>{lbl}
+                    </span>
+                  ))}
+                </div>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
 function CaseConnectionsPanel({ caseId }: { caseId: string }) {
   // Derived graph: shows every person on this case + which other cases
   // they appear on. Not a fancy node-link visualization yet — that lands
@@ -1123,6 +1190,68 @@ function ConnectionRow({
         </div>
       ) : null}
     </li>
+  );
+}
+
+function PersonMentionsRow({ caseId, person }: { caseId: string; person: Person }) {
+  // Lazy-load mentions: the substring scan over every doc is cheap, but
+  // there's no reason to do it for every Person on every case render.
+  const [expanded, setExpanded] = useState(false);
+  const { data, isFetching } = useQuery({
+    queryKey: ["person-mentions", caseId, person.id],
+    queryFn: () => getPersonMentions(caseId, person.id),
+    enabled: expanded,
+    staleTime: 60_000,
+  });
+  const mentions = data?.mentions ?? [];
+  const docCount = new Set(mentions.map((m) => m.document_id)).size;
+
+  // Click a mention → bounce to the Evidence tab with the doc + line
+  // pre-targeted. Reuses the cross-route citation jump wired earlier.
+  const jump = (filename: string, line: number) => {
+    const p = new URLSearchParams({ doc: filename, line: String(line) });
+    setHashPath(`${ROUTES.casePrefix}${caseId}?${p.toString()}`);
+  };
+
+  return (
+    <div className="mt-1.5">
+      <button
+        type="button"
+        onClick={() => setExpanded((e) => !e)}
+        className="text-[11px] text-blue-700 hover:underline"
+      >
+        {expanded
+          ? (isFetching
+              ? "Scanning documents…"
+              : mentions.length > 0
+                ? `− ${mentions.length} mention${mentions.length === 1 ? "" : "s"} across ${docCount} doc${docCount === 1 ? "" : "s"}`
+                : "− no document mentions")
+          : "+ find document mentions"}
+      </button>
+      {expanded && mentions.length > 0 ? (
+        <ul className="mt-1.5 ml-3 pl-3 border-l-2 border-blue-200 space-y-0.5">
+          {mentions.slice(0, 25).map((m, i) => (
+            <li key={`${m.document_id}-${m.line}-${i}`} className="text-[11px]">
+              <button
+                type="button"
+                onClick={() => jump(m.filename, m.line)}
+                className="text-left w-full hover:bg-slate-50 rounded px-1.5 py-0.5"
+                title="Jump to this line in the Evidence tab"
+              >
+                <span className="font-mono text-slate-500">{m.filename}</span>
+                <span className="font-mono text-slate-400 mx-1">L{m.line}</span>
+                <span className="text-slate-700">{m.snippet}</span>
+              </button>
+            </li>
+          ))}
+          {mentions.length > 25 ? (
+            <li className="text-[10px] text-slate-500 italic px-1.5">
+              + {mentions.length - 25} more — scroll the documents directly to see them all.
+            </li>
+          ) : null}
+        </ul>
+      ) : null}
+    </div>
   );
 }
 
@@ -1473,6 +1602,7 @@ function PeopleTab({ caseId }: { caseId: string }) {
                               {p.provenance.suggested_rationale}
                             </div>
                           ) : null}
+                          <PersonMentionsRow caseId={caseId} person={p} />
                         </div>
                         <button
                           type="button"

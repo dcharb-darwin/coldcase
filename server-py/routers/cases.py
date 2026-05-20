@@ -258,6 +258,98 @@ def create_case(body: CreateCaseBody, user: CurrentUser = Depends(current_user))
     return case.to_dict()
 
 
+@router.get("/{case_id}/similar")
+@require_perm("case.read")
+def similar_cases(
+    case_id: str,
+    limit: int = 5,
+    user: CurrentUser = Depends(current_user),
+):
+    """Cases the agency has that share a meaningful tag set with this one.
+
+    Jaccard similarity over the user-tag sets (system tags excluded — they
+    auto-fire on most cases and would wash out the signal). Cases with no
+    overlap don't show up. Returns the top `limit` matches with the shared
+    tag slugs spelled out so the UI can render "Brady-relevant · Suspect"
+    next to each match.
+    """
+    focal = Case.objects(id=case_id, tenant_id=user.tenant_id).first()
+    if not focal:
+        raise HTTPException(404, "Case not found")
+
+    # Pull every CASE-scope user-tag assignment in the tenant once.
+    # Tenant scale is small enough that this beats N+1 per-case queries.
+    user_tag_ids: set[str] = {
+        str(t.id)
+        for t in Tag.objects(tenant_id=user.tenant_id, kind="user").only("id")
+    }
+    if not user_tag_ids:
+        return {"focal_case_id": case_id, "similar": []}
+
+    by_case: dict[str, set[str]] = {}
+    label_by_slug: dict[str, str] = {}
+    slug_by_tag_id: dict[str, str] = {
+        str(t.id): t.slug
+        for t in Tag.objects(tenant_id=user.tenant_id, id__in=list(user_tag_ids)).only("slug")
+    }
+    for t in Tag.objects(tenant_id=user.tenant_id, kind="user").only("slug", "label"):
+        label_by_slug[t.slug] = t.label
+
+    for a in TagAssignment.objects(
+        tenant_id=user.tenant_id,
+        subject_kind=TagSubjectKind.CASE.value,
+        tag_id__in=list(user_tag_ids),
+    ).only("tag_id", "subject_id"):
+        slug = slug_by_tag_id.get(a.tag_id)
+        if not slug:
+            continue
+        by_case.setdefault(a.subject_id, set()).add(slug)
+
+    focal_tags = by_case.get(case_id, set())
+    if not focal_tags:
+        return {"focal_case_id": case_id, "similar": [], "reason": "Focal case has no user tags applied."}
+
+    scored: list[tuple[float, str, set[str]]] = []
+    for other_id, other_tags in by_case.items():
+        if other_id == case_id:
+            continue
+        if not other_tags:
+            continue
+        intersect = focal_tags & other_tags
+        if not intersect:
+            continue
+        union = focal_tags | other_tags
+        # Jaccard. Bounded [0, 1]; 1.0 = identical tag set.
+        score = len(intersect) / max(len(union), 1)
+        scored.append((score, other_id, intersect))
+
+    scored.sort(key=lambda t: (-t[0], t[1]))
+    top = scored[: max(1, min(limit, 25))]
+
+    cases_by_id = {
+        str(c.id): c for c in Case.objects(
+            tenant_id=user.tenant_id, id__in=[oid for _s, oid, _i in top],
+        )
+    }
+
+    out: list[dict] = []
+    for score, other_id, intersect in top:
+        c = cases_by_id.get(other_id)
+        if not c:
+            continue
+        out.append({
+            "case_id": other_id,
+            "case_number": c.case_number,
+            "case_title": c.title,
+            "case_classification": c.classification,
+            "status": c.status,
+            "score": round(score, 3),
+            "shared_tag_slugs": sorted(intersect),
+            "shared_tag_labels": [label_by_slug.get(s, s) for s in sorted(intersect)],
+        })
+    return {"focal_case_id": case_id, "focal_tags": sorted(focal_tags), "similar": out}
+
+
 @router.get("/{case_id}")
 @require_perm("case.read")
 def get_case(case_id: str, user: CurrentUser = Depends(current_user)):

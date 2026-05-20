@@ -443,6 +443,27 @@ export async function getCaseConnections(caseId: string): Promise<CaseConnection
   return data;
 }
 
+export interface SimilarCase {
+  case_id: string;
+  case_number: string;
+  case_title: string;
+  case_classification: CaseClassification;
+  status: CaseStatus;
+  score: number;
+  shared_tag_slugs: string[];
+  shared_tag_labels: string[];
+}
+
+export async function getSimilarCases(caseId: string): Promise<{
+  focal_case_id: string;
+  focal_tags?: string[];
+  similar: SimilarCase[];
+  reason?: string;
+}> {
+  const { data } = await http.get(`/cases/${caseId}/similar`);
+  return data;
+}
+
 export interface RelatedPerson {
   name: string;
   role: PersonRole;
@@ -465,6 +486,21 @@ export async function getPersonNetwork(
   const params: Record<string, string> = { name };
   if (opts?.excludeCaseId) params.exclude_case_id = opts.excludeCaseId;
   const { data } = await http.get<PersonNetwork>("/persons/network", { params });
+  return data;
+}
+
+export interface PersonMention {
+  document_id: string;
+  filename: string;
+  line: number;
+  snippet: string;
+  matched_variant: string;
+}
+
+export async function getPersonMentions(
+  caseId: string, personId: string,
+): Promise<{ person_id: string; name: string; variants: string[]; mentions: PersonMention[] }> {
+  const { data } = await http.get(`/cases/${caseId}/persons/${personId}/mentions`);
   return data;
 }
 

@@ -247,6 +247,114 @@ def case_connections(case_id: str, user: CurrentUser = Depends(current_user)):
     }
 
 
+# ── Document mention finder (Person → doc + line) ──────────────────────────
+
+
+def _name_variants(full: str) -> list[str]:
+    """Variants worth searching for in document text:
+       - the full name as-is
+       - the full name without honorifics
+       - the surname-only form (last whitespace-separated token)
+    Skips variants under 3 chars (too noisy). Deduped + order-preserved.
+    """
+    out: list[str] = []
+    cleaned = (full or "").strip()
+    if not cleaned:
+        return out
+
+    # Strip honorifics from a copy so we keep the original full form too.
+    no_hon = _re.sub(
+        r"^\s*(Dr|Mr|Mrs|Ms|Mx|Prof|Rev|Sgt|Det|Capt|Lt|Hon)\.?\s+",
+        "", cleaned, flags=_re.IGNORECASE,
+    ).strip()
+
+    candidates = [cleaned, no_hon]
+    parts = no_hon.split()
+    if parts:
+        candidates.append(parts[-1])  # surname
+
+    seen: set[str] = set()
+    for c in candidates:
+        c = c.strip()
+        if len(c) < 3:
+            continue
+        key = c.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(c)
+    return out
+
+
+@router.get("/cases/{case_id}/persons/{person_id}/mentions")
+@require_perm("case.read")
+def person_mentions(
+    case_id: str, person_id: str,
+    user: CurrentUser = Depends(current_user),
+):
+    """Find every line in the case's documents where this person's name
+    (or a variant — surname, no-honorifics) appears verbatim.
+
+    The investigative-gold endpoint that closes the loop from
+    "Hinton is on this case" → "Hinton is mentioned on carter-page-7.pdf
+    line 3 in this exact sentence." Click-through to the doc + line uses
+    the existing cross-route citation system.
+
+    Substring search, not LLM extraction: deterministic, fast, no
+    auditable AI call. Variants are limited so we don't false-positive
+    on common surnames.
+    """
+    case = Case.objects(id=case_id, tenant_id=user.tenant_id).first()
+    if not case:
+        raise HTTPException(404, "Case not found")
+    p = Person.objects(id=person_id, tenant_id=user.tenant_id).first()
+    if not p or not p.case or str(p.case.id) != case_id:
+        raise HTTPException(404, "Person not found on this case")
+
+    variants = _name_variants(p.name)
+    if not variants:
+        return {"person_id": person_id, "name": p.name, "variants": [], "mentions": []}
+
+    # Case-insensitive whole-ish substring search. Whole-word boundary
+    # would be ideal, but doc text is often punctuation-noisy ("Mr.
+    # Hinton,") so a substring with case-insensitive compare is the
+    # right pragmatic trade.
+    needles_lower = [v.lower() for v in variants]
+
+    mentions: list[dict] = []
+    docs = list(Document.objects(case=case))
+    for d in docs:
+        try:
+            text = extract_text(d)
+        except Exception:  # noqa: BLE001
+            continue
+        if not text:
+            continue
+        for line_idx, line in enumerate(text.split("\n"), start=1):
+            line_lower = line.lower()
+            for needle, needle_lower in zip(variants, needles_lower):
+                if needle_lower in line_lower:
+                    mentions.append({
+                        "document_id": str(d.id),
+                        "filename": d.original_filename,
+                        "line": line_idx,
+                        "snippet": line.strip()[:240],
+                        "matched_variant": needle,
+                    })
+                    break  # one hit per line is enough; don't double-count variants
+            if len(mentions) >= 200:
+                break  # hard ceiling to keep responses bounded
+        if len(mentions) >= 200:
+            break
+
+    return {
+        "person_id": person_id,
+        "name": p.name,
+        "variants": variants,
+        "mentions": mentions,
+    }
+
+
 # ── Two-hop co-occurrence network ──────────────────────────────────────────
 
 
