@@ -443,6 +443,31 @@ export async function getCaseConnections(caseId: string): Promise<CaseConnection
   return data;
 }
 
+export interface RelatedPerson {
+  name: string;
+  role: PersonRole;
+  descriptor: string;
+  on_case_id: string;
+  on_case_number: string;
+}
+
+export interface PersonNetwork {
+  query: string;
+  normalized: string;
+  matches: PersonMatch[];
+  related_persons: RelatedPerson[];
+}
+
+export async function getPersonNetwork(
+  name: string,
+  opts?: { excludeCaseId?: string },
+): Promise<PersonNetwork> {
+  const params: Record<string, string> = { name };
+  if (opts?.excludeCaseId) params.exclude_case_id = opts.excludeCaseId;
+  const { data } = await http.get<PersonNetwork>("/persons/network", { params });
+  return data;
+}
+
 // ── Timeline entries (detective-curated dated case events) ───────────────
 
 export type TimelineEntrySource = "manual" | "ai_suggested";

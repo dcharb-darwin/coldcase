@@ -14,6 +14,7 @@ import {
   deleteTimelineEntry,
   getAuditChainReport,
   getCaseConnections,
+  getPersonNetwork,
   getReportChain,
   listAuditEvents,
   listConversations,
@@ -38,9 +39,11 @@ import {
   type MediaInput,
   type Message,
   type NextStepSuggestion,
+  type ConnectionNode,
   type Person,
   type PersonRole,
   type PersonSuggestion,
+  type RelatedPerson,
   type Report,
   type TagSuggestion,
   type TimelineEntry as TimelineEntryT,
@@ -981,48 +984,145 @@ function CaseConnectionsPanel({ caseId }: { caseId: string }) {
         </div>
       ) : (
         <ul className="space-y-2">
-          {personRows.filter((r) => r.targets.length > 0).map(({ person, targets }) => (
-            <li key={person.id} className="border border-slate-200 rounded p-2.5 bg-white">
-              <div className="flex items-baseline gap-2">
-                <span className="font-medium text-slate-900">{person.name}</span>
-                <span className="text-[11px] text-slate-500 capitalize">
-                  ({person.role?.replace("_", " ")})
-                </span>
-                {person.ai_sourced ? (
-                  <span className="inline-flex items-center px-1.5 py-0.5 rounded-full border border-purple-200 bg-purple-50 text-purple-800 text-[10px] uppercase tracking-wide font-medium">
-                    AI
-                  </span>
-                ) : null}
-              </div>
-              <ul className="mt-1.5 space-y-1">
-                {targets.map((c) => (
-                  <li key={c.id}>
-                    <button
-                      type="button"
-                      onClick={() => setHashPath(`${ROUTES.casePrefix}${c.case_id}`)}
-                      className="w-full text-left flex items-baseline gap-2 px-2 py-1 rounded hover:bg-slate-50"
-                    >
-                      <span className="text-purple-700">↗</span>
-                      <span className="font-mono text-xs text-slate-700">{c.case_number}</span>
-                      <span className="text-sm text-slate-900 truncate flex-1">{c.case_title}</span>
-                      {c.case_classification === "homicide" || c.case_classification === "sexual_assault" ? (
-                        <span className="text-[11px] text-red-700 font-medium capitalize">
-                          {c.case_classification?.replace("_", " ")}
-                        </span>
-                      ) : (
-                        <span className="text-[11px] text-slate-500 capitalize">
-                          {c.case_classification?.replace("_", " ")}
-                        </span>
-                      )}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </li>
-          ))}
+          {personRows
+            .filter((r) => r.targets.length > 0)
+            .map(({ person, targets }) => (
+              <ConnectionRow
+                key={person.id}
+                caseId={caseId}
+                person={person}
+                targets={targets}
+              />
+            ))}
         </ul>
       )}
     </section>
+  );
+}
+
+function ConnectionRow({
+  caseId, person, targets,
+}: {
+  caseId: string;
+  person: ConnectionNode;
+  targets: ConnectionNode[];
+}) {
+  // Two-hop expand. The fetch is gated on user click so we don't spend
+  // a network query per person at panel-mount time. Result lives in
+  // react-query so closing/reopening is free.
+  const [expanded, setExpanded] = useState(false);
+  const { data: network, isFetching: networkLoading } = useQuery({
+    queryKey: ["person-network", person.name, caseId],
+    queryFn: () => getPersonNetwork(person.name ?? "", { excludeCaseId: caseId }),
+    enabled: expanded && Boolean(person.name),
+    staleTime: 60_000,
+  });
+
+  // Group co-occurring people by the case where they share with the focal
+  // person. The detective reads it as "on case X, James shows up with
+  // Jane, John, …".
+  const grouped = useMemo(() => {
+    if (!network) return [] as { caseId: string; caseNumber: string; persons: RelatedPerson[] }[];
+    const m = new Map<string, { caseId: string; caseNumber: string; persons: RelatedPerson[] }>();
+    for (const r of network.related_persons) {
+      const existing = m.get(r.on_case_id);
+      if (existing) {
+        existing.persons.push(r);
+      } else {
+        m.set(r.on_case_id, { caseId: r.on_case_id, caseNumber: r.on_case_number, persons: [r] });
+      }
+    }
+    return [...m.values()];
+  }, [network]);
+
+  return (
+    <li className="border border-slate-200 rounded p-2.5 bg-white">
+      <div className="flex items-baseline gap-2">
+        <span className="font-medium text-slate-900">{person.name}</span>
+        <span className="text-[11px] text-slate-500 capitalize">
+          ({person.role?.replace("_", " ")})
+        </span>
+        {person.ai_sourced ? (
+          <span className="inline-flex items-center px-1.5 py-0.5 rounded-full border border-purple-200 bg-purple-50 text-purple-800 text-[10px] uppercase tracking-wide font-medium">
+            AI
+          </span>
+        ) : null}
+        <button
+          type="button"
+          onClick={() => setExpanded((e) => !e)}
+          className="ml-auto text-[11px] text-purple-700 hover:underline"
+          title={expanded ? "Hide who else appears with this person" : "Show who else appears with this person on connected cases"}
+        >
+          {expanded ? "− network" : "+ network"}
+        </button>
+      </div>
+
+      <ul className="mt-1.5 space-y-1">
+        {targets.map((c) => (
+          <li key={c.id}>
+            <button
+              type="button"
+              onClick={() => setHashPath(`${ROUTES.casePrefix}${c.case_id}`)}
+              className="w-full text-left flex items-baseline gap-2 px-2 py-1 rounded hover:bg-slate-50"
+            >
+              <span className="text-purple-700">↗</span>
+              <span className="font-mono text-xs text-slate-700">{c.case_number}</span>
+              <span className="text-sm text-slate-900 truncate flex-1">{c.case_title}</span>
+              {c.case_classification === "homicide" || c.case_classification === "sexual_assault" ? (
+                <span className="text-[11px] text-red-700 font-medium capitalize">
+                  {c.case_classification?.replace("_", " ")}
+                </span>
+              ) : (
+                <span className="text-[11px] text-slate-500 capitalize">
+                  {c.case_classification?.replace("_", " ")}
+                </span>
+              )}
+            </button>
+          </li>
+        ))}
+      </ul>
+
+      {expanded ? (
+        <div className="mt-2 ml-4 pl-3 border-l-2 border-purple-200">
+          {networkLoading ? (
+            <div className="text-[11px] text-slate-500 italic">Loading network…</div>
+          ) : !network || grouped.length === 0 ? (
+            <div className="text-[11px] text-slate-500 italic">
+              No other people on the connected case
+              {targets.length === 1 ? "" : "s"}.
+            </div>
+          ) : (
+            grouped.map((g) => (
+              <div key={g.caseId} className="mb-1.5 last:mb-0">
+                <div className="text-[11px] text-slate-500">
+                  Co-occurring on{" "}
+                  <button
+                    type="button"
+                    onClick={() => setHashPath(`${ROUTES.casePrefix}${g.caseId}`)}
+                    className="font-mono text-slate-700 hover:underline"
+                  >
+                    {g.caseNumber}
+                  </button>:
+                </div>
+                <ul className="ml-2 mt-0.5 space-y-0.5">
+                  {g.persons.map((rp: RelatedPerson, i: number) => (
+                    <li key={`${rp.name}-${i}`} className="text-xs text-slate-700">
+                      <span className="text-slate-900">{rp.name}</span>
+                      <span className="text-[11px] text-slate-500 ml-1 capitalize">
+                        ({rp.role.replace("_", " ")})
+                      </span>
+                      {rp.descriptor ? (
+                        <span className="text-[11px] text-slate-500 ml-1">· {rp.descriptor}</span>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))
+          )}
+        </div>
+      ) : null}
+    </li>
   );
 }
 

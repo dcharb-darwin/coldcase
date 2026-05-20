@@ -247,6 +247,95 @@ def case_connections(case_id: str, user: CurrentUser = Depends(current_user)):
     }
 
 
+# ── Two-hop co-occurrence network ──────────────────────────────────────────
+
+
+@router.get("/persons/network")
+@require_perm("case.read")
+def person_network(
+    name: str,
+    exclude_case_id: str | None = None,
+    user: CurrentUser = Depends(current_user),
+):
+    """Two-hop traversal from a named person:
+
+      1-hop: cases where this person (loose-match) appears.
+      2-hop: every OTHER person on those cases.
+
+    Answers "who does this witness/suspect share cases with?" — the
+    detective question that motivates a real network view rather than
+    just a list of name matches. `exclude_case_id` skips the focal case
+    so the result is "the person's other-case ecosystem".
+    """
+    if not name.strip():
+        raise HTTPException(422, "name is required")
+    target = _normalize_name(name)
+    if not target:
+        return {"matches": [], "related_persons": []}
+
+    # 1-hop: find every Person row with this normalized name across the
+    # tenant. Group by case so we hit each case once even if there are
+    # multiple Person rows for the same person.
+    matches_by_case: dict[str, dict] = {}
+    for p in Person.objects(tenant_id=user.tenant_id).only("name", "role", "descriptor", "case"):
+        if _normalize_name(p.name) != target:
+            continue
+        if not p.case:
+            continue
+        cid = str(p.case.id)
+        if exclude_case_id and cid == exclude_case_id:
+            continue
+        if cid in matches_by_case:
+            continue
+        case = p.case
+        matches_by_case[cid] = {
+            "case_id": cid,
+            "case_number": case.case_number,
+            "case_title": case.title,
+            "case_classification": case.classification,
+            "person_id": str(p.id),
+            "name": p.name,
+            "role": p.role,
+            "descriptor": p.descriptor,
+        }
+
+    matches = list(matches_by_case.values())
+
+    # 2-hop: every other Person on the 1-hop cases. Skip rows whose
+    # normalized name is the focal person (don't double-count them as
+    # their own "related person"). Group by the case-of-shared-appearance
+    # so the UI can render "on case X, they share with: …".
+    related: list[dict] = []
+    if matches:
+        case_ids = list(matches_by_case.keys())
+        # Resolve to actual Case references to satisfy the ReferenceField filter.
+        cases_by_id = {str(c.id): c for c in Case.objects(tenant_id=user.tenant_id, id__in=case_ids)}
+        cohort = Person.objects(
+            tenant_id=user.tenant_id,
+            case__in=list(cases_by_id.values()),
+        ).only("name", "role", "descriptor", "case")
+        for p in cohort:
+            if _normalize_name(p.name) == target:
+                continue  # don't include the focal person as their own neighbor
+            cid = str(p.case.id) if p.case else None
+            if not cid:
+                continue
+            related.append({
+                "name": p.name,
+                "role": p.role,
+                "descriptor": p.descriptor,
+                "on_case_id": cid,
+                "on_case_number": matches_by_case[cid]["case_number"],
+            })
+
+    return {
+        "query": name,
+        "normalized": target,
+        "matches": matches,             # 1-hop cases
+        "related_persons": related,     # 2-hop persons
+    }
+
+
 # ── Cross-case lookup ──────────────────────────────────────────────────────
 
 
