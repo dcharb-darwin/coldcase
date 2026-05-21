@@ -17,7 +17,8 @@ from models.timeline_entry import TimelineEntry, TimelineEntrySource
 from models.note import Note, NoteSubjectKind
 from models.hypothesis import (
     BrainDump, BrainDumpSource,
-    Hypothesis, HypothesisStatus, HypothesisFinding, HypothesisFindingKind,
+    Hypothesis, HypothesisStatus, HypothesisOrigin,
+    HypothesisFinding, HypothesisFindingKind,
 )
 
 __all__ = [
@@ -35,5 +36,6 @@ __all__ = [
     "TimelineEntry", "TimelineEntrySource",
     "Note", "NoteSubjectKind",
     "BrainDump", "BrainDumpSource",
-    "Hypothesis", "HypothesisStatus", "HypothesisFinding", "HypothesisFindingKind",
+    "Hypothesis", "HypothesisStatus", "HypothesisOrigin",
+    "HypothesisFinding", "HypothesisFindingKind",
 ]

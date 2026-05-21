@@ -8,10 +8,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   acceptHypothesisFinding, checkHypothesis, createBrainDump, createHypothesis,
-  deleteHypothesis, listHypotheses, suggestHypotheses, updateBrainDump,
+  deleteHypothesis, generateDeNovoHypotheses, getBiasVocab, listHypotheses,
+  redTeamHypothesis, suggestHypotheses, updateBrainDump,
   updateHypothesis, uploadAudioBrainDump,
-  type BrainDump, type Hypothesis, type HypothesisFinding,
-  type HypothesisFindingKind, type HypothesisStatus, type HypothesisSuggestion,
+  type BiasFlagDef, type BrainDump, type Hypothesis, type HypothesisFinding,
+  type HypothesisFindingKind, type HypothesisOrigin, type HypothesisStatus,
+  type HypothesisSuggestion, type RedTeamResult,
 } from "@/lib/api/coldcase";
 
 
@@ -35,6 +37,20 @@ const FINDING_CHIP_CLS: Record<HypothesisFindingKind, string> = {
   gap: "bg-amber-50 text-amber-800 border-amber-200",
 };
 
+const ORIGIN_LABEL: Record<HypothesisOrigin, string> = {
+  human_typed: "Human",
+  ai_from_braindump: "AI · brain dump",
+  ai_de_novo: "AI · de-novo",
+  ai_alternative: "AI · alternative",
+};
+
+const ORIGIN_CHIP_CLS: Record<HypothesisOrigin, string> = {
+  human_typed: "bg-slate-100 text-slate-700 border-slate-300",
+  ai_from_braindump: "bg-indigo-50 text-indigo-800 border-indigo-200",
+  ai_de_novo: "bg-teal-50 text-teal-800 border-teal-200",
+  ai_alternative: "bg-purple-50 text-purple-800 border-purple-200",
+};
+
 
 export default function HypothesisTab({ caseId }: { caseId: string }) {
   const { data, isLoading } = useQuery({
@@ -56,14 +72,16 @@ export default function HypothesisTab({ caseId }: { caseId: string }) {
         <header>
           <h2 className="text-[15px] font-semibold text-slate-900">Hypotheses</h2>
           <p className="text-xs text-slate-500 mt-0.5">
-            Brain-dump freely (typed now; voice + upload coming next). AI hones
-            the dump into structured, falsifiable hypotheses. Detective approves
-            which to formally investigate. Cross-check against case docs finds
-            supporting, contradicting, and gap evidence.
+            Three AI agents with different incentives. <b>Generator</b> hones a
+            brain dump into structured hypotheses. <b>De-novo</b> reads the case
+            docs without your framing for a fresh-eyes view. <b>Red-team</b>
+            attacks each hypothesis on demand — counter-evidence, alternatives,
+            cognitive bias flags. Detective approves every step.
           </p>
         </header>
 
         <BrainDumpComposer caseId={caseId} />
+        <DeNovoGenerator caseId={caseId} />
 
         <section>
           <h3 className="text-[13px] font-semibold text-slate-900 mb-2">
@@ -579,6 +597,8 @@ function HypothesisCard({ caseId, hypothesis: h }: { caseId: string; hypothesis:
   const [pendingFindings, setPendingFindings] = useState<(Omit<HypothesisFinding, "accepted_by" | "accepted_at" | "suggested_by_model"> & { _key: string })[]>([]);
   const [checkModel, setCheckModel] = useState("");
   const [error, setError] = useState<string>("");
+  const [redTeamResult, setRedTeamResult] = useState<RedTeamResult | null>(null);
+  const [redTeaming, setRedTeaming] = useState(false);
 
   const statusMut = useMutation({
     mutationFn: (status: HypothesisStatus) => updateHypothesis(caseId, h.id, { status }),
@@ -599,6 +619,23 @@ function HypothesisCard({ caseId, hypothesis: h }: { caseId: string; hypothesis:
       setPendingFindings((prev) => prev.filter((p) => p._key !== f._key));
     },
   });
+  const acceptAltMut = useMutation({
+    mutationFn: (alt: HypothesisSuggestion) => createHypothesis(caseId, {
+      title: alt.title,
+      body: alt.body,
+      rationale: alt.rationale,
+      origin: "ai_alternative",
+      parent_hypothesis_id: h.id,
+      model: redTeamResult?.model ?? "",
+    }),
+    onSuccess: (_data, alt) => {
+      qc.invalidateQueries({ queryKey: ["case-hypotheses", caseId] });
+      setRedTeamResult((prev) => prev ? {
+        ...prev,
+        alternatives: prev.alternatives.filter((a) => a.title !== alt.title),
+      } : prev);
+    },
+  });
 
   const runCheck = async () => {
     setError("");
@@ -614,6 +651,22 @@ function HypothesisCard({ caseId, hypothesis: h }: { caseId: string; hypothesis:
     }
   };
 
+  const runRedTeam = async () => {
+    setError("");
+    setRedTeaming(true);
+    try {
+      const resp = await redTeamHypothesis(caseId, h.id);
+      setRedTeamResult(resp);
+      // The endpoint persists bias_flags + logical_gaps on the hypothesis;
+      // refresh so the card reflects the new chips.
+      qc.invalidateQueries({ queryKey: ["case-hypotheses", caseId] });
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setRedTeaming(false);
+    }
+  };
+
   return (
     <li className="border border-slate-200 rounded p-3 bg-white">
       <header className="flex items-start gap-2">
@@ -622,14 +675,33 @@ function HypothesisCard({ caseId, hypothesis: h }: { caseId: string; hypothesis:
             <span className={`inline-flex items-center px-2 py-0.5 rounded-full border text-[10px] capitalize shrink-0 ${STATUS_CHIP_CLS[h.status]}`}>
               {STATUS_LABELS[h.status]}
             </span>
+            <span className={`inline-flex items-center px-2 py-0.5 rounded-full border text-[10px] shrink-0 ${ORIGIN_CHIP_CLS[h.origin]}`}>
+              {ORIGIN_LABEL[h.origin]}
+            </span>
             <h4 className="text-sm font-semibold text-slate-900">{h.title}</h4>
-            {h.proposed_by_model ? (
-              <span className="text-[10px] uppercase tracking-wide text-purple-700">AI</span>
+            {h.red_team_count > 0 ? (
+              <span className="text-[10px] text-amber-700" title="Times red-teamed">
+                ⚠ {h.red_team_count}× challenged
+              </span>
             ) : null}
           </div>
           {h.body ? <p className="text-xs text-slate-700 mt-1 leading-relaxed">{h.body}</p> : null}
           {h.rationale ? (
             <p className="text-[11px] text-slate-500 italic mt-1">Rationale: {h.rationale}</p>
+          ) : null}
+          {h.origin === "ai_alternative" && h.parent_hypothesis_id ? (
+            <p className="text-[11px] text-purple-700 mt-1">
+              ↗ alternative surfaced by red-teaming a parent hypothesis
+            </p>
+          ) : null}
+          {h.bias_flags.length > 0 ? (
+            <BiasFlagChips slugs={h.bias_flags} />
+          ) : null}
+          {h.logical_gaps.length > 0 ? (
+            <div className="text-[11px] text-amber-800 mt-1.5 pl-2 border-l-2 border-amber-200 space-y-0.5">
+              <div className="text-[10px] uppercase tracking-wide text-amber-700 font-semibold">Logical gaps</div>
+              {h.logical_gaps.map((g, i) => <div key={i}>{g}</div>)}
+            </div>
           ) : null}
         </div>
         <div className="shrink-0">
@@ -656,20 +728,29 @@ function HypothesisCard({ caseId, hypothesis: h }: { caseId: string; hypothesis:
         </div>
       ) : null}
 
-      {/* Check button + pending findings */}
+      {/* Action row */}
       <div className="mt-2 pt-2 border-t border-slate-100">
         <div className="flex items-baseline justify-between gap-2">
           <span className="text-[11px] text-slate-500">
-            AI cross-check against the case documents — supporting, contradicting, gaps.
+            Cross-check finds supporting / contradicting / gap evidence. Challenge runs
+            the red-team agent — counter-evidence + alternatives + bias flags.
           </span>
           <div className="flex gap-1.5 shrink-0">
             <button
               type="button"
               onClick={runCheck}
-              disabled={checking}
+              disabled={checking || redTeaming}
               className="px-2.5 py-0.5 text-[11px] rounded border border-blue-300 bg-white text-blue-800 hover:bg-blue-50 disabled:opacity-50"
             >
               {checking ? "Checking…" : "Check evidence"}
+            </button>
+            <button
+              type="button"
+              onClick={runRedTeam}
+              disabled={checking || redTeaming}
+              className="px-2.5 py-0.5 text-[11px] rounded border border-amber-400 bg-white text-amber-900 hover:bg-amber-50 disabled:opacity-50"
+            >
+              {redTeaming ? "Red-teaming…" : "Challenge this"}
             </button>
             <button
               type="button"
@@ -731,8 +812,317 @@ function HypothesisCard({ caseId, hypothesis: h }: { caseId: string; hypothesis:
             })}
           </ul>
         ) : null}
+
+        {redTeamResult ? (
+          <RedTeamResultPanel
+            caseId={caseId}
+            hypothesis={h}
+            result={redTeamResult}
+            onAcceptCounter={(f) => {
+              acceptFindingMut.mutate({ ...f, _key: `rt-${f.excerpt.slice(0, 16)}` });
+              setRedTeamResult((prev) => prev ? {
+                ...prev,
+                counter_evidence: prev.counter_evidence.filter((c) => c.excerpt !== f.excerpt),
+              } : prev);
+            }}
+            onInvestigateAlt={(alt) => acceptAltMut.mutate(alt)}
+            acceptAltPending={(alt) => acceptAltMut.isPending && acceptAltMut.variables?.title === alt.title}
+            onDismiss={() => setRedTeamResult(null)}
+          />
+        ) : null}
       </div>
     </li>
+  );
+}
+
+
+// ── Red-team result panel — three-column challenge view ──────────────────
+
+function RedTeamResultPanel({
+  result, onAcceptCounter, onInvestigateAlt, acceptAltPending, onDismiss,
+}: {
+  caseId: string;
+  hypothesis: Hypothesis;
+  result: RedTeamResult;
+  onAcceptCounter: (f: Omit<HypothesisFinding, "accepted_by" | "accepted_at" | "suggested_by_model">) => void;
+  onInvestigateAlt: (alt: HypothesisSuggestion) => void;
+  acceptAltPending: (alt: HypothesisSuggestion) => boolean;
+  onDismiss: () => void;
+}) {
+  const empty =
+    result.counter_evidence.length === 0 &&
+    result.alternatives.length === 0 &&
+    result.bias_flags.length === 0 &&
+    result.logical_gaps.length === 0;
+
+  return (
+    <section className="mt-3 border border-amber-300 bg-amber-50/40 rounded p-3">
+      <div className="flex items-baseline justify-between mb-2">
+        <div>
+          <h5 className="text-[12px] font-semibold text-amber-900">Red-team challenge</h5>
+          <p className="text-[11px] text-amber-800/80">
+            Critic agent: attacked this hypothesis, did not look for supporting evidence.
+            {result.model ? <> · <span className="font-mono">{result.model}</span></> : null}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onDismiss}
+          className="text-[11px] text-slate-600 hover:underline"
+        >
+          Close
+        </button>
+      </div>
+
+      {empty ? (
+        <div className="text-[11px] text-slate-600 italic">
+          Red-team found no counter-evidence, alternatives, biases, or gaps to flag.
+          Hypothesis withstood this challenge.
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div>
+            <div className="text-[10px] uppercase tracking-wide text-red-800 font-semibold mb-1">
+              Counter-evidence ({result.counter_evidence.length})
+            </div>
+            {result.counter_evidence.length === 0 ? (
+              <div className="text-[11px] text-slate-500 italic">(none)</div>
+            ) : (
+              <ul className="space-y-1.5">
+                {result.counter_evidence.map((c, i) => (
+                  <li key={i} className="bg-white border border-red-200 rounded p-2">
+                    <div className="text-[11px] text-slate-800 pl-2 border-l-2 border-red-300">
+                      "{c.excerpt}"
+                    </div>
+                    {c.rationale ? (
+                      <div className="text-[11px] text-slate-600 italic mt-0.5">{c.rationale}</div>
+                    ) : null}
+                    {c.source_doc_filename ? (
+                      <div className="text-[10px] text-slate-400 font-mono mt-0.5">{c.source_doc_filename}</div>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => onAcceptCounter(c)}
+                      className="mt-1 px-2 py-0.5 text-[11px] rounded bg-red-700 text-white hover:bg-red-800"
+                    >
+                      Add to record
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          <div>
+            <div className="text-[10px] uppercase tracking-wide text-purple-800 font-semibold mb-1">
+              Alternatives ({result.alternatives.length})
+            </div>
+            {result.alternatives.length === 0 ? (
+              <div className="text-[11px] text-slate-500 italic">(none)</div>
+            ) : (
+              <ul className="space-y-1.5">
+                {result.alternatives.map((a, i) => {
+                  const pending = acceptAltPending(a);
+                  return (
+                    <li key={i} className="bg-white border border-purple-200 rounded p-2">
+                      <div className="text-[12px] font-semibold text-slate-900">{a.title}</div>
+                      {a.body ? <div className="text-[11px] text-slate-700 mt-0.5">{a.body}</div> : null}
+                      {a.rationale ? (
+                        <div className="text-[11px] text-purple-700 italic mt-0.5">{a.rationale}</div>
+                      ) : null}
+                      <button
+                        type="button"
+                        disabled={pending}
+                        onClick={() => onInvestigateAlt(a)}
+                        className="mt-1 px-2 py-0.5 text-[11px] rounded bg-purple-700 text-white hover:bg-purple-800 disabled:opacity-50"
+                      >
+                        {pending ? "Saving…" : "Investigate this instead"}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+
+          <div>
+            <div className="text-[10px] uppercase tracking-wide text-amber-800 font-semibold mb-1">
+              Biases + gaps
+            </div>
+            {result.bias_flags.length > 0 ? (
+              <div className="mb-2">
+                <div className="text-[10px] uppercase tracking-wide text-amber-700">Bias flags</div>
+                <BiasFlagChips slugs={result.bias_flags} />
+                <div className="text-[10px] text-slate-500 italic mt-0.5">
+                  (now persisted on the hypothesis)
+                </div>
+              </div>
+            ) : null}
+            {result.logical_gaps.length > 0 ? (
+              <div>
+                <div className="text-[10px] uppercase tracking-wide text-amber-700">Logical gaps</div>
+                <ul className="text-[11px] text-slate-700 space-y-0.5 mt-0.5">
+                  {result.logical_gaps.map((g, i) => <li key={i}>· {g}</li>)}
+                </ul>
+              </div>
+            ) : null}
+            {result.bias_flags.length === 0 && result.logical_gaps.length === 0 ? (
+              <div className="text-[11px] text-slate-500 italic">(none)</div>
+            ) : null}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+
+// ── De-novo generator — no brain dump, case docs only ────────────────────
+
+function DeNovoGenerator({ caseId }: { caseId: string }) {
+  const qc = useQueryClient();
+  const [suggestions, setSuggestions] = useState<HypothesisSuggestion[]>([]);
+  const [model, setModel] = useState("");
+  const [running, setRunning] = useState(false);
+  const [error, setError] = useState("");
+  const [dismissed, setDismissed] = useState<Set<string>>(new Set());
+  const [accepted, setAccepted] = useState<string[]>([]);
+
+  const acceptMut = useMutation({
+    mutationFn: (s: HypothesisSuggestion) => createHypothesis(caseId, {
+      title: s.title,
+      body: s.body,
+      rationale: s.rationale,
+      origin: "ai_de_novo",
+      model,
+    }),
+    onSuccess: (_h, s) => {
+      qc.invalidateQueries({ queryKey: ["case-hypotheses", caseId] });
+      setAccepted((p) => p.includes(s.title) ? p : [...p, s.title]);
+    },
+  });
+
+  const run = async () => {
+    setError("");
+    setRunning(true);
+    setSuggestions([]);
+    try {
+      const resp = await generateDeNovoHypotheses(caseId);
+      setSuggestions(resp.suggestions);
+      setModel(resp.model ?? "");
+      setAccepted([]);
+      setDismissed(new Set());
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const visible = suggestions.filter((s) => !dismissed.has(s.title) && !accepted.includes(s.title));
+
+  return (
+    <section className="border border-teal-200 bg-teal-50/30 rounded p-4">
+      <div className="flex items-baseline justify-between gap-2 mb-2">
+        <div>
+          <h3 className="text-[13px] font-semibold text-slate-900">De-novo — no brain dump</h3>
+          <p className="text-[11px] text-slate-500">
+            Fresh-eyes agent. Reads the case documents <em>without</em> your framing
+            and proposes hypotheses the documents raise but no one has answered.
+            Use when you're stuck or suspicious of your own theory.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={run}
+          disabled={running}
+          className="px-3 py-1.5 text-xs rounded bg-teal-700 text-white hover:bg-teal-800 disabled:opacity-50 shrink-0"
+        >
+          {running ? "Reading…" : suggestions.length > 0 ? "Refresh" : "Generate from case docs"}
+        </button>
+      </div>
+
+      {accepted.length > 0 ? (
+        <div className="text-[11px] text-emerald-800 bg-emerald-50 border border-emerald-200 rounded px-2 py-1 mb-2">
+          ✓ {accepted.length} de-novo hypothesis{accepted.length === 1 ? "" : "es"} under investigation — see list below.
+        </div>
+      ) : null}
+
+      {error ? <div className="text-xs text-red-700">{error}</div> : null}
+      {running ? <div className="text-xs text-slate-500 italic">Reading the documents…</div> : null}
+
+      {visible.length > 0 ? (
+        <ul className="space-y-2 mt-2">
+          {visible.map((s) => {
+            const isPending = acceptMut.isPending && acceptMut.variables?.title === s.title;
+            return (
+              <li key={s.title} className="bg-white border border-slate-200 rounded p-2.5">
+                <div className="flex items-start gap-2">
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-semibold text-slate-900">{s.title}</div>
+                    {s.body ? <div className="text-xs text-slate-700 mt-0.5 leading-snug">{s.body}</div> : null}
+                    {s.rationale ? (
+                      <div className="text-[11px] text-teal-700 italic mt-1">{s.rationale}</div>
+                    ) : null}
+                  </div>
+                  <div className="flex flex-col gap-1 shrink-0">
+                    <button
+                      type="button"
+                      disabled={isPending}
+                      onClick={() => acceptMut.mutate(s)}
+                      className="px-2 py-0.5 text-[11px] rounded bg-teal-700 text-white hover:bg-teal-800 disabled:opacity-50"
+                    >
+                      {isPending ? "Saving…" : "Investigate"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDismissed((p) => new Set(p).add(s.title))}
+                      className="px-2 py-0.5 text-[11px] rounded border border-slate-200 text-slate-600 hover:bg-slate-100"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
+    </section>
+  );
+}
+
+
+// ── Bias flag chips — closed vocab fetched from /hypothesis-bias-vocab ──
+
+function BiasFlagChips({ slugs }: { slugs: string[] }) {
+  const { data } = useQuery({
+    queryKey: ["bias-vocab"],
+    queryFn: getBiasVocab,
+    staleTime: 60 * 60_000,
+  });
+  const lookup = useMemo(() => {
+    const m = new Map<string, BiasFlagDef>();
+    for (const f of data?.flags ?? []) m.set(f.slug, f);
+    return m;
+  }, [data]);
+
+  if (slugs.length === 0) return null;
+  return (
+    <div className="flex flex-wrap gap-1 mt-1.5">
+      {slugs.map((slug) => {
+        const def = lookup.get(slug);
+        return (
+          <span
+            key={slug}
+            title={def?.tooltip ?? slug}
+            className="inline-flex items-center px-1.5 py-0.5 rounded-full border text-[10px] bg-amber-50 text-amber-900 border-amber-300"
+          >
+            ⚠ {def?.label ?? slug}
+          </span>
+        );
+      })}
+    </div>
   );
 }
 

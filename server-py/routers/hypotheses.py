@@ -34,8 +34,10 @@ from pathlib import PurePosixPath
 from models import (
     BrainDump, BrainDumpSource,
     Case, Document,
-    Hypothesis, HypothesisStatus, HypothesisFinding, HypothesisFindingKind,
+    Hypothesis, HypothesisStatus, HypothesisOrigin,
+    HypothesisFinding, HypothesisFindingKind,
 )
+from services.bias_vocab import BIAS_FLAGS, BIAS_SLUGS, bias_vocab_for_prompt
 from models.audit_event import AuditEventType
 from providers.llm import get_llm_provider
 from routers._deps import CurrentUser, current_user, require_perm
@@ -160,10 +162,12 @@ def suggest_hypotheses(
         "`body` (1–3 sentences elaborating the claim and what would test it), "
         "`rationale` (one sentence explaining what in the brain-dump or the "
         "case documents prompted this hypothesis). "
-        "Return a JSON array, up to 6 entries. Be conservative — only "
-        "include hypotheses the detective explicitly raised or that the "
-        "documents directly support. Do not invent hypotheses the detective "
-        "didn't mention."
+        "Return a JSON array, up to 6 entries. Stay grounded in the "
+        "documents — do not invent claims neither the detective nor the "
+        "documents support. BUT: include at least one hypothesis the "
+        "detective did NOT raise but the documents directly suggest. The "
+        "detective's brain dump may be anchored on one theory; your value "
+        "is partly in showing them an angle they haven't said out loud."
     )
     user_prompt = (
         f"Case: {case.case_number} — {case.title}\n"
@@ -214,6 +218,13 @@ class AcceptHypothesisBody(BaseModel):
     rationale: str = Field(default="", max_length=600)
     brain_dump_id: Optional[str] = None
     model: str = Field(default="", max_length=120)
+    # Multi-agent metadata. If omitted, inferred:
+    #   brain_dump_id present → ai_from_braindump
+    #   parent_hypothesis_id present → ai_alternative
+    #   model present but no brain dump → ai_de_novo
+    #   otherwise → human_typed
+    origin: Optional[HypothesisOrigin] = None
+    parent_hypothesis_id: Optional[str] = None
 
 
 @router.post("/cases/{case_id}/hypotheses", status_code=201)
@@ -234,6 +245,25 @@ def create_hypothesis(
         if not bd:
             raise HTTPException(404, "Brain dump not found on this case")
 
+    parent_id = (body.parent_hypothesis_id or "").strip()
+    if parent_id:
+        parent = Hypothesis.objects(id=parent_id, tenant_id=user.tenant_id, case=case).first()
+        if not parent:
+            raise HTTPException(404, "Parent hypothesis not found on this case")
+
+    # Infer origin from the body's signals if the caller didn't declare one.
+    if body.origin is not None:
+        origin = body.origin.value
+    elif parent_id:
+        origin = HypothesisOrigin.AI_ALTERNATIVE.value
+    elif body.brain_dump_id:
+        origin = HypothesisOrigin.AI_FROM_BRAINDUMP.value
+    elif body.model:
+        origin = HypothesisOrigin.AI_DE_NOVO.value
+    else:
+        origin = HypothesisOrigin.HUMAN_TYPED.value
+
+    is_ai = origin != HypothesisOrigin.HUMAN_TYPED.value
     now = datetime.utcnow()
     h = Hypothesis(
         tenant_id=user.tenant_id, case=case,
@@ -241,24 +271,31 @@ def create_hypothesis(
         body=body.body.strip(),
         rationale=body.rationale.strip(),
         status=HypothesisStatus.INVESTIGATING.value,
+        origin=origin,
+        parent_hypothesis_id=parent_id,
         brain_dump=bd,
-        proposed_by_model=body.model if body.brain_dump_id else "",
-        proposed_at=now if body.brain_dump_id else None,
-        accepted_by=user.user_id if body.brain_dump_id else "",
-        accepted_at=now if body.brain_dump_id else None,
+        proposed_by_model=body.model if is_ai else "",
+        proposed_at=now if is_ai else None,
+        accepted_by=user.user_id if is_ai else "",
+        accepted_at=now if is_ai else None,
         status_changed_at=now,
         created_by=user.user_id, updated_by=user.user_id,
     ).save()
 
+    event_type = (
+        AuditEventType.HYPOTHESIS_ACCEPTED_FROM_AI if is_ai
+        else AuditEventType.HYPOTHESIS_CREATED
+    )
     case_audit.log_user_event(
         user,
-        event_type=AuditEventType.HYPOTHESIS_ACCEPTED_FROM_AI if body.brain_dump_id
-            else AuditEventType.HYPOTHESIS_CREATED,
+        event_type=event_type,
         case_id=str(case.id),
-        summary=f"Hypothesis under investigation: '{h.title[:80]}'",
+        summary=f"Hypothesis under investigation [{origin}]: '{h.title[:80]}'",
         detail={
             "hypothesis_id": str(h.id),
             "title": h.title,
+            "origin": origin,
+            "parent_hypothesis_id": parent_id,
             "brain_dump_id": str(bd.id) if bd else None,
             "model": body.model,
         },
@@ -487,6 +524,289 @@ def accept_finding(
         },
     )
     return h.to_dict()
+
+
+# ── De-novo hypothesis generator (no brain dump) ───────────────────────────
+#
+# Sibling to suggest-hypotheses but reads case docs without a brain dump
+# anchor. Use when the detective is stuck, suspicious of their own framing,
+# or onboarding to a case they didn't open. Output is unanchored to any
+# detective utterance — gives a "fresh investigator" perspective.
+
+
+@router.post("/cases/{case_id}/hypotheses/generate")
+@require_perm("case.read")
+def generate_de_novo_hypotheses(
+    case_id: str, user: CurrentUser = Depends(current_user),
+):
+    """De-novo agent — case documents only, no brain dump. Returns
+    candidate hypotheses framed as questions the docs raise but no one
+    has answered. Persists nothing; detective accepts each into a
+    Hypothesis with origin=ai_de_novo."""
+    case = Case.objects(id=case_id, tenant_id=user.tenant_id).first()
+    if not case:
+        raise HTTPException(404, "Case not found")
+
+    docs_block, _ = _case_docs_block(case)
+    if not docs_block:
+        return {"suggestions": [], "reason": "No extractable document text on this case."}
+
+    system = (
+        "You are a fresh-eyes investigator reading a cold-case file for "
+        "the first time. The detective has NOT given you their theory. "
+        "Read the documents and propose hypotheses that the documents "
+        "themselves raise — questions, contradictions, or unexplained "
+        "facts that anyone reviewing the file would notice. "
+        "For each hypothesis return a JSON object with: "
+        "`title` (under 12 words — the claim, not the question), "
+        "`body` (1–3 sentences with what would test it), "
+        "`rationale` (one sentence pointing at what in the documents "
+        "raised this — quote a phrase if possible). "
+        "Return a JSON array, up to 6 entries. Prefer hypotheses that "
+        "the existing record does NOT already address. Stay grounded — "
+        "do not invent facts not in the documents."
+    )
+    user_prompt = (
+        f"Case: {case.case_number} — {case.title}\n"
+        f"Classification: {case.classification}\n\n"
+        f"=== CASE DOCUMENTS ===\n{docs_block}\n\n"
+        f"Return JSON only."
+    )
+
+    try:
+        provider = get_llm_provider()
+        resp = provider.chat(system=system, user=user_prompt)
+        raw = resp.content if hasattr(resp, "content") else ""
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("De-novo hypothesis generator failed: %s", exc)
+        return {"suggestions": [], "reason": f"LLM unavailable: {exc}"}
+
+    parsed = _extract_json_list(raw)
+    suggestions: list[dict] = []
+    seen: set[str] = set()
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        title = (item.get("title") or "").strip()
+        if not title or title.lower() in seen:
+            continue
+        seen.add(title.lower())
+        suggestions.append({
+            "title": title,
+            "body": (item.get("body") or "").strip(),
+            "rationale": (item.get("rationale") or "").strip(),
+        })
+        if len(suggestions) >= 6:
+            break
+
+    case_audit.log_user_event(
+        user,
+        event_type=AuditEventType.HYPOTHESIS_GENERATED_DE_NOVO,
+        case_id=str(case.id),
+        summary=f"De-novo hypothesis generator surfaced {len(suggestions)} candidate(s)",
+        detail={
+            "model": getattr(resp, "model", ""),
+            "candidate_count": len(suggestions),
+        },
+    )
+
+    return {"suggestions": suggestions, "model": getattr(resp, "model", "")}
+
+
+# ── Red-team: challenge a specific hypothesis ──────────────────────────────
+
+
+@router.post("/cases/{case_id}/hypotheses/{hyp_id}/red-team")
+@require_perm("case.edit")  # mutates bias_flags + logical_gaps on the hypothesis
+def red_team_hypothesis(
+    case_id: str, hyp_id: str, user: CurrentUser = Depends(current_user),
+):
+    """Critic agent — given ONE hypothesis, finds counter-evidence in the
+    case documents, proposes alternative explanations that fit the same
+    evidence, names cognitive biases the hypothesis may reflect, and
+    identifies logical gaps. Counter-evidence + alternatives are
+    transient (detective accepts them via the existing endpoints).
+    Bias flags + logical gaps persist on the hypothesis itself —
+    they belong in the permanent record.
+    """
+    case = Case.objects(id=case_id, tenant_id=user.tenant_id).first()
+    if not case:
+        raise HTTPException(404, "Case not found")
+    target = Hypothesis.objects(id=hyp_id, tenant_id=user.tenant_id, case=case).first()
+    if not target:
+        raise HTTPException(404, "Hypothesis not found")
+
+    docs_block, name_by_id = _case_docs_block(case)
+    siblings = [
+        h for h in Hypothesis.objects(tenant_id=user.tenant_id, case=case)
+        if str(h.id) != str(target.id)
+    ]
+    siblings_block = "\n".join(
+        f"- [{h.status}] {h.title}" for h in siblings[:8]
+    ) or "(no other hypotheses on this case)"
+
+    system = (
+        "You are a red-team investigator. Your job is to ATTACK the "
+        "given hypothesis — find what's wrong with it. Do not look for "
+        "supporting evidence; another agent does that. Do not propose "
+        "stronger versions of the claim; that's the wrong direction. "
+        "If you cannot find anything that argues against the hypothesis, "
+        "return empty arrays — do NOT invent strawmen to look productive.\n"
+        "\n"
+        "Return a JSON object with four arrays:\n"
+        "  counter_evidence: items where the case documents directly "
+        "contradict or undermine the hypothesis. Each item: "
+        "{excerpt (exact quote, under 30 words), rationale (one sentence "
+        "explaining how it contradicts the hypothesis), source_doc_id "
+        "(the doc_id from the document marker)}.\n"
+        "  alternatives: distinct alternative hypotheses that fit the "
+        "SAME evidence equally well. Each: {title (under 12 words), body "
+        "(1–2 sentences), rationale (why this fits the same evidence)}.\n"
+        "  bias_flags: cognitive biases the hypothesis MAY reflect. "
+        "Choose ONLY from this closed vocabulary (return the slug):\n"
+        f"{bias_vocab_for_prompt()}\n"
+        "  logical_gaps: strings naming what the hypothesis assumes but "
+        "does not establish. One assumption per string.\n"
+        "\n"
+        "Be calibrated. Empty arrays are valid and preferable to fabrication."
+    )
+    user_prompt = (
+        f"Case: {case.case_number} — {case.title}\n"
+        f"Classification: {case.classification}\n\n"
+        f"=== HYPOTHESIS UNDER REVIEW ===\n"
+        f"Title: {target.title}\n"
+        f"Body:  {target.body}\n"
+        f"Rationale: {target.rationale}\n"
+        f"Status: {target.status}\n"
+        f"Origin: {target.origin}\n\n"
+        f"=== OTHER HYPOTHESES ON THIS CASE ===\n{siblings_block}\n\n"
+        f"=== CASE DOCUMENTS ===\n{docs_block or '(no extractable text on this case)'}\n\n"
+        f"Return JSON only — a single object, not an array."
+    )
+
+    try:
+        provider = get_llm_provider()
+        resp = provider.chat(system=system, user=user_prompt)
+        raw = resp.content if hasattr(resp, "content") else ""
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Red-team agent failed: %s", exc)
+        return {
+            "counter_evidence": [], "alternatives": [],
+            "bias_flags": [], "logical_gaps": [],
+            "reason": f"LLM unavailable: {exc}",
+        }
+
+    # Parse a single JSON object (not array — different shape than other
+    # endpoints).
+    import re as _re_local
+    obj_match = _re_local.search(r"\{[\s\S]*\}", raw)
+    parsed: dict = {}
+    if obj_match:
+        try:
+            candidate = json.loads(obj_match.group(0))
+            if isinstance(candidate, dict):
+                parsed = candidate
+        except json.JSONDecodeError:
+            pass
+
+    counter_evidence: list[dict] = []
+    for item in (parsed.get("counter_evidence") or []):
+        if not isinstance(item, dict):
+            continue
+        excerpt = (item.get("excerpt") or "").strip()
+        if not excerpt:
+            continue
+        source_doc_id = (item.get("source_doc_id") or "").strip()
+        if source_doc_id and source_doc_id not in name_by_id:
+            source_doc_id = ""
+        counter_evidence.append({
+            "kind": HypothesisFindingKind.CONTRADICTING.value,
+            "excerpt": excerpt,
+            "rationale": (item.get("rationale") or "").strip(),
+            "source_doc_id": source_doc_id,
+            "source_doc_filename": name_by_id.get(source_doc_id, ""),
+        })
+        if len(counter_evidence) >= 5:
+            break
+
+    alternatives: list[dict] = []
+    seen_titles: set[str] = set()
+    for item in (parsed.get("alternatives") or []):
+        if not isinstance(item, dict):
+            continue
+        title = (item.get("title") or "").strip()
+        if not title or title.lower() in seen_titles:
+            continue
+        seen_titles.add(title.lower())
+        alternatives.append({
+            "title": title,
+            "body": (item.get("body") or "").strip(),
+            "rationale": (item.get("rationale") or "").strip(),
+        })
+        if len(alternatives) >= 5:
+            break
+
+    raw_flags = parsed.get("bias_flags") or []
+    new_flags = [
+        slug for slug in raw_flags
+        if isinstance(slug, str) and slug in BIAS_SLUGS
+    ]
+    raw_gaps = parsed.get("logical_gaps") or []
+    new_gaps = [
+        (g or "").strip() for g in raw_gaps
+        if isinstance(g, str) and (g or "").strip()
+    ]
+
+    # Persist bias flags + logical gaps on the hypothesis — they belong
+    # in the record. Dedupe against what's already there.
+    existing_flags = set(target.bias_flags or [])
+    merged_flags = sorted(existing_flags | set(new_flags))
+    existing_gaps = list(target.logical_gaps or [])
+    merged_gaps = list(existing_gaps)
+    for g in new_gaps:
+        if g not in merged_gaps:
+            merged_gaps.append(g)
+
+    target.bias_flags = merged_flags
+    target.logical_gaps = merged_gaps
+    target.red_team_count = int(target.red_team_count or 0) + 1
+    target.updated_at = datetime.utcnow()
+    target.updated_by = user.user_id
+    target.save()
+
+    case_audit.log_user_event(
+        user,
+        event_type=AuditEventType.HYPOTHESIS_RED_TEAMED,
+        case_id=str(case.id),
+        summary=(
+            f"Red-team challenged hypothesis '{target.title[:60]}' — "
+            f"{len(counter_evidence)} counter / {len(alternatives)} alt / "
+            f"{len(new_flags)} bias / {len(new_gaps)} gap"
+        ),
+        detail={
+            "hypothesis_id": str(target.id),
+            "model": getattr(resp, "model", ""),
+            "counter_evidence_count": len(counter_evidence),
+            "alternative_count": len(alternatives),
+            "bias_flags_added": new_flags,
+            "logical_gaps_added": new_gaps,
+        },
+    )
+
+    return {
+        "counter_evidence": counter_evidence,
+        "alternatives": alternatives,
+        "bias_flags": new_flags,
+        "logical_gaps": new_gaps,
+        "model": getattr(resp, "model", ""),
+        "hypothesis": target.to_dict(),
+    }
+
+
+@router.get("/hypothesis-bias-vocab")
+def hypothesis_bias_vocab():
+    """Public — UI fetches once to render bias-flag chips with tooltips."""
+    return {"flags": BIAS_FLAGS}
 
 
 # ── Audio brain dump: in-portal capture + drag-drop upload ──────────────────

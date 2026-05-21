@@ -550,6 +550,14 @@ export async function mergePersons(
 
 export type HypothesisStatus = "investigating" | "confirmed" | "disproved" | "superseded";
 export type HypothesisFindingKind = "supporting" | "contradicting" | "gap";
+export type HypothesisOrigin =
+  | "human_typed" | "ai_from_braindump" | "ai_de_novo" | "ai_alternative";
+
+export interface BiasFlagDef {
+  slug: string;
+  label: string;
+  tooltip: string;
+}
 
 export interface BrainDump {
   id: string;
@@ -584,6 +592,11 @@ export interface Hypothesis {
   body: string;
   rationale: string;
   status: HypothesisStatus;
+  origin: HypothesisOrigin;
+  parent_hypothesis_id: string;
+  bias_flags: string[];
+  logical_gaps: string[];
+  red_team_count: number;
   brain_dump_id: string | null;
   proposed_by_model: string;
   proposed_at: string | null;
@@ -654,9 +667,48 @@ export async function createHypothesis(
     rationale?: string;
     brain_dump_id?: string;
     model?: string;
+    origin?: HypothesisOrigin;
+    parent_hypothesis_id?: string;
   },
 ): Promise<Hypothesis> {
   const { data } = await http.post(`/cases/${caseId}/hypotheses`, body);
+  return data;
+}
+
+export async function generateDeNovoHypotheses(caseId: string): Promise<{
+  suggestions: HypothesisSuggestion[]; model?: string; reason?: string;
+}> {
+  const { data } = await http.post(`/cases/${caseId}/hypotheses/generate`);
+  return data;
+}
+
+export interface RedTeamCounterEvidence {
+  kind: "contradicting";
+  excerpt: string;
+  rationale: string;
+  source_doc_id: string;
+  source_doc_filename: string;
+}
+
+export interface RedTeamResult {
+  counter_evidence: RedTeamCounterEvidence[];
+  alternatives: HypothesisSuggestion[];
+  bias_flags: string[];
+  logical_gaps: string[];
+  model?: string;
+  reason?: string;
+  hypothesis: Hypothesis;
+}
+
+export async function redTeamHypothesis(
+  caseId: string, id: string,
+): Promise<RedTeamResult> {
+  const { data } = await http.post(`/cases/${caseId}/hypotheses/${id}/red-team`);
+  return data;
+}
+
+export async function getBiasVocab(): Promise<{ flags: BiasFlagDef[] }> {
+  const { data } = await http.get(`/hypothesis-bias-vocab`);
   return data;
 }
 

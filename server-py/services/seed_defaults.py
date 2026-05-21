@@ -177,6 +177,26 @@ def seed_tag_vocabulary(tenant_id: str) -> int:
     return created
 
 
+def backfill_hypothesis_origin(tenant_id: str) -> int:
+    """Idempotent one-shot for rows created before `origin` existed.
+    `origin` defaults to `human_typed` on new docs; we need to upgrade
+    rows that were AI-generated to `ai_from_braindump`. Heuristic:
+    populated `proposed_by_model` ⇒ AI-from-braindump (the only AI path
+    that existed in v0.10.0)."""
+    from models import Hypothesis, HypothesisOrigin
+
+    fixed = 0
+    for h in Hypothesis.objects(tenant_id=tenant_id, origin__exists=False):
+        h.origin = (
+            HypothesisOrigin.AI_FROM_BRAINDUMP.value
+            if (h.proposed_by_model or "").strip()
+            else HypothesisOrigin.HUMAN_TYPED.value
+        )
+        h.save()
+        fixed += 1
+    return fixed
+
+
 def seed_all(tenant_id: str, dev_user_id: str, app_id: str) -> dict:
     # Audit-chain backfill is done first so any audit events the rest of
     # this function emits (none today, but defensively) land on a chain
@@ -191,4 +211,5 @@ def seed_all(tenant_id: str, dev_user_id: str, app_id: str) -> dict:
         "demo_case_created": seed_demo_case(tenant_id, dev_user_id),
         "external_id_backfill": backfill_external_ids(tenant_id),
         "starter_tags_seeded": seed_tag_vocabulary(tenant_id),
+        "hypothesis_origin_backfilled": backfill_hypothesis_origin(tenant_id),
     }

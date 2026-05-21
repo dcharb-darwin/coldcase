@@ -24,7 +24,7 @@ from enum import Enum
 from mongoengine import (
     Document as MEDocument,
     StringField, DateTimeField, ReferenceField, EmbeddedDocumentField,
-    EmbeddedDocument, ListField,
+    EmbeddedDocument, IntField, ListField,
 )
 
 from models.case import Case
@@ -101,6 +101,17 @@ class HypothesisStatus(str, Enum):
     SUPERSEDED = "superseded"         # replaced by a different hypothesis
 
 
+class HypothesisOrigin(str, Enum):
+    """Who/what surfaced this hypothesis. Multi-agent provenance so the
+    detective sees at a glance whose framing they're looking at, and the
+    city attorney can answer "which AI agent produced this artifact"
+    during PRA / discovery review."""
+    HUMAN_TYPED = "human_typed"              # detective typed it into the editor
+    AI_FROM_BRAINDUMP = "ai_from_braindump"  # generator agent, from a brain dump
+    AI_DE_NOVO = "ai_de_novo"                # de-novo generator, case docs only
+    AI_ALTERNATIVE = "ai_alternative"        # red-team agent proposed as alternative
+
+
 class HypothesisFindingKind(str, Enum):
     SUPPORTING = "supporting"
     CONTRADICTING = "contradicting"
@@ -154,6 +165,26 @@ class Hypothesis(MEDocument):
         required=True, default=HypothesisStatus.INVESTIGATING.value,
         choices=[s.value for s in HypothesisStatus],
     )
+    origin = StringField(
+        required=True, default=HypothesisOrigin.HUMAN_TYPED.value,
+        choices=[o.value for o in HypothesisOrigin],
+    )
+    # When origin=AI_ALTERNATIVE, the red-team run that surfaced this
+    # hypothesis was challenging this parent. Lineage is preserved so the
+    # detective can navigate parent ↔ children, and so PRA / discovery
+    # review can trace the alternative back to its progenitor.
+    parent_hypothesis_id = StringField(default="")
+    # Closed-vocab bias flags surfaced by red-team passes against this
+    # hypothesis. Accrues across runs; once flagged a bias stays flagged
+    # (no dismissal mechanism — bias flags belong in the record).
+    bias_flags = ListField(StringField(), default=list)
+    # Logical gaps the red-team identified — things the hypothesis assumes
+    # but does not establish. Free-text strings since the gaps are
+    # case-specific by nature; not a closed vocab.
+    logical_gaps = ListField(StringField(), default=list)
+    # How many times red_team has been run against this hypothesis. Shown
+    # on the card so detective knows whether it's been stress-tested.
+    red_team_count = IntField(default=0)
 
     # If this hypothesis originated from a BrainDump (vs hand-typed),
     # keep the lineage. Optional.
@@ -185,6 +216,11 @@ class Hypothesis(MEDocument):
             "body": self.body,
             "rationale": self.rationale,
             "status": self.status,
+            "origin": self.origin,
+            "parent_hypothesis_id": self.parent_hypothesis_id or "",
+            "bias_flags": list(self.bias_flags or []),
+            "logical_gaps": list(self.logical_gaps or []),
+            "red_team_count": int(self.red_team_count or 0),
             "brain_dump_id": str(self.brain_dump.id) if self.brain_dump else None,
             "proposed_by_model": self.proposed_by_model,
             "proposed_at": self.proposed_at.isoformat() if self.proposed_at else None,
