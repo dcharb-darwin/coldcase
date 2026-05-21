@@ -4,13 +4,14 @@
 // Phase 1: typed input only. Voice capture + audio upload land in Phase 2
 // behind the same backend endpoints (BrainDump model carries the source).
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   acceptHypothesisFinding, checkHypothesis, createBrainDump, createHypothesis,
-  deleteHypothesis, listHypotheses, suggestHypotheses, updateHypothesis,
-  type Hypothesis, type HypothesisFinding, type HypothesisFindingKind,
-  type HypothesisStatus, type HypothesisSuggestion,
+  deleteHypothesis, listHypotheses, suggestHypotheses, updateBrainDump,
+  updateHypothesis, uploadAudioBrainDump,
+  type BrainDump, type Hypothesis, type HypothesisFinding,
+  type HypothesisFindingKind, type HypothesisStatus, type HypothesisSuggestion,
 } from "@/lib/api/coldcase";
 
 
@@ -100,17 +101,33 @@ export default function HypothesisTab({ caseId }: { caseId: string }) {
 
 // ── Brain-dump composer + suggestion review ──────────────────────────────
 
+type Mode = "type" | "record" | "upload";
+
+
 function BrainDumpComposer({ caseId }: { caseId: string }) {
   const qc = useQueryClient();
+  const [mode, setMode] = useState<Mode>("type");
+
+  // The composer's persistent state — the active brain-dump, its transcript
+  // (editable after audio transcribes), and the AI suggestion review state.
+  const [activeDump, setActiveDump] = useState<BrainDump | null>(null);
   const [transcript, setTranscript] = useState("");
-  const [dumpId, setDumpId] = useState<string | null>(null);
   const [suggestions, setSuggestions] = useState<HypothesisSuggestion[]>([]);
   const [model, setModel] = useState("");
   const [accepted, setAccepted] = useState<string[]>([]);
   const [dismissed, setDismissed] = useState<Set<string>>(new Set());
+  const [errorMsg, setErrorMsg] = useState("");
 
-  const dumpMut = useMutation({
+  const textDumpMut = useMutation({
     mutationFn: (text: string) => createBrainDump(caseId, { transcript: text }),
+  });
+  const audioDumpMut = useMutation({
+    mutationFn: (vars: { blob: Blob; filename: string; source: "audio_recorded" | "audio_uploaded" }) =>
+      uploadAudioBrainDump(caseId, vars.blob, vars.filename, vars.source),
+  });
+  const editTranscriptMut = useMutation({
+    mutationFn: (vars: { id: string; text: string }) =>
+      updateBrainDump(caseId, vars.id, { transcript: vars.text }),
   });
 
   const suggestMut = useMutation({
@@ -128,7 +145,7 @@ function BrainDumpComposer({ caseId }: { caseId: string }) {
       title: s.title,
       body: s.body,
       rationale: s.rationale,
-      brain_dump_id: dumpId ?? undefined,
+      brain_dump_id: activeDump?.id,
       model,
     }),
     onSuccess: (_h, s) => {
@@ -137,58 +154,162 @@ function BrainDumpComposer({ caseId }: { caseId: string }) {
     },
   });
 
-  const onCaptureAndExtract = async () => {
+  const reset = () => {
+    setActiveDump(null);
+    setTranscript("");
+    setSuggestions([]);
+    setAccepted([]);
+    setDismissed(new Set());
+    setErrorMsg("");
+  };
+
+  const onTypedCapture = async () => {
     const text = transcript.trim();
     if (!text) return;
-    const dump = await dumpMut.mutateAsync(text);
-    setDumpId(dump.id);
-    suggestMut.mutate(dump.id);
+    setErrorMsg("");
+    try {
+      const dump = await textDumpMut.mutateAsync(text);
+      setActiveDump(dump);
+      suggestMut.mutate(dump.id);
+    } catch (err) {
+      setErrorMsg((err as Error).message);
+    }
+  };
+
+  const handleAudioCapture = async (
+    blob: Blob, filename: string, source: "audio_recorded" | "audio_uploaded",
+  ) => {
+    setErrorMsg("");
+    try {
+      const dump = await audioDumpMut.mutateAsync({ blob, filename, source });
+      setActiveDump(dump);
+      setTranscript(dump.transcript);
+      if (dump.transcript) {
+        // Don't auto-suggest yet — let detective edit Whisper's output first.
+      }
+    } catch (err) {
+      setErrorMsg((err as Error).message);
+    }
+  };
+
+  const runSuggestOnExistingDump = async () => {
+    if (!activeDump) return;
+    setErrorMsg("");
+    try {
+      // If transcript changed, persist it before re-extracting.
+      if (transcript.trim() !== activeDump.transcript) {
+        const updated = await editTranscriptMut.mutateAsync({
+          id: activeDump.id, text: transcript.trim(),
+        });
+        setActiveDump(updated);
+      }
+      suggestMut.mutate(activeDump.id);
+    } catch (err) {
+      setErrorMsg((err as Error).message);
+    }
   };
 
   const visibleSuggestions = suggestions.filter(
     (s) => !accepted.includes(s.title) && !dismissed.has(s.title),
   );
 
-  const isBusy = dumpMut.isPending || suggestMut.isPending;
+  const isBusy = textDumpMut.isPending || audioDumpMut.isPending || suggestMut.isPending || editTranscriptMut.isPending;
 
   return (
     <section className="border border-indigo-200 bg-indigo-50/30 rounded p-4">
-      <div className="flex items-baseline justify-between mb-2">
-        <h3 className="text-[13px] font-semibold text-slate-900">Brain dump → hypotheses</h3>
-        <span className="text-[11px] text-slate-500">
-          {dumpId ? "Captured. Approve suggestions below." : "Speak freely on the page; AI structures it."}
-        </span>
+      <div className="flex items-baseline justify-between mb-2 gap-2">
+        <div>
+          <h3 className="text-[13px] font-semibold text-slate-900">Brain dump → hypotheses</h3>
+          <p className="text-[11px] text-slate-500">
+            Speak freely, upload a voice memo, or type. AI structures the dump
+            into falsifiable hypotheses you approve individually.
+          </p>
+        </div>
+        <ModeSwitch mode={mode} setMode={setMode} disabled={Boolean(activeDump)} />
       </div>
 
-      <textarea
-        value={transcript}
-        onChange={(e) => setTranscript(e.target.value)}
-        rows={5}
-        placeholder={"Driving back from the witness interview. Two things bug me. First, the timeline doesn't add up..."}
-        className="w-full border border-slate-300 rounded px-2 py-1.5 text-sm bg-white"
-      />
+      {/* Input panel — three flavors. Hidden once we have a transcript to
+          edit; the transcript editor takes over. */}
+      {!activeDump ? (
+        <>
+          {mode === "type" ? (
+            <textarea
+              value={transcript}
+              onChange={(e) => setTranscript(e.target.value)}
+              rows={5}
+              placeholder={"Driving back from the witness interview. Two things bug me. First, the timeline doesn't add up..."}
+              className="w-full border border-slate-300 rounded px-2 py-1.5 text-sm bg-white"
+            />
+          ) : null}
+          {mode === "record" ? (
+            <VoiceRecorder
+              onCapture={(blob, filename) => handleAudioCapture(blob, filename, "audio_recorded")}
+              disabled={isBusy}
+            />
+          ) : null}
+          {mode === "upload" ? (
+            <AudioUploadDrop
+              onFile={(file) => handleAudioCapture(file, file.name, "audio_uploaded")}
+              disabled={isBusy}
+            />
+          ) : null}
+        </>
+      ) : null}
+
+      {/* Once we have an active dump with a transcript, show the editor +
+          a single "extract hypotheses" button. */}
+      {activeDump ? (
+        <>
+          <div className="text-[11px] text-slate-500 mb-1.5 flex items-baseline justify-between">
+            <span>
+              Transcript {activeDump.transcript_model ? (
+                <span className="font-mono">· {activeDump.transcript_model}</span>
+              ) : null}
+              {activeDump.audio_filename ? (
+                <span className="font-mono"> · {activeDump.audio_filename}</span>
+              ) : null}
+            </span>
+            <span className="text-slate-400">Edit before extracting — fix names, dates, badge numbers.</span>
+          </div>
+          <textarea
+            value={transcript}
+            onChange={(e) => setTranscript(e.target.value)}
+            rows={Math.min(12, Math.max(4, Math.ceil(transcript.length / 90)))}
+            className="w-full border border-slate-300 rounded px-2 py-1.5 text-sm bg-white"
+          />
+        </>
+      ) : null}
 
       <div className="flex items-center gap-2 mt-2">
-        <button
-          type="button"
-          disabled={!transcript.trim() || isBusy}
-          onClick={onCaptureAndExtract}
-          className="px-3 py-1.5 text-xs rounded bg-indigo-700 text-white hover:bg-indigo-800 disabled:opacity-50"
-        >
-          {isBusy ? "Reading…" : dumpId ? "Refresh hypotheses" : "Capture + suggest hypotheses"}
-        </button>
-        {dumpId ? (
+        {!activeDump && mode === "type" ? (
           <button
             type="button"
-            onClick={() => { setTranscript(""); setDumpId(null); setSuggestions([]); setAccepted([]); setDismissed(new Set()); }}
-            className="px-2 py-1 text-xs rounded border border-slate-300 hover:bg-slate-50"
+            disabled={!transcript.trim() || isBusy}
+            onClick={onTypedCapture}
+            className="px-3 py-1.5 text-xs rounded bg-indigo-700 text-white hover:bg-indigo-800 disabled:opacity-50"
           >
-            New dump
+            {isBusy ? "Reading…" : "Capture + suggest hypotheses"}
           </button>
         ) : null}
-        <span className="text-[10px] text-slate-400 ml-auto">
-          Voice capture + upload land next. Endpoint is provider-agnostic.
-        </span>
+        {activeDump ? (
+          <>
+            <button
+              type="button"
+              disabled={!transcript.trim() || isBusy}
+              onClick={runSuggestOnExistingDump}
+              className="px-3 py-1.5 text-xs rounded bg-indigo-700 text-white hover:bg-indigo-800 disabled:opacity-50"
+            >
+              {isBusy ? "Reading…" : suggestions.length > 0 ? "Refresh hypotheses" : "Suggest hypotheses"}
+            </button>
+            <button
+              type="button"
+              onClick={reset}
+              className="px-2 py-1 text-xs rounded border border-slate-300 hover:bg-slate-50"
+            >
+              New dump
+            </button>
+          </>
+        ) : null}
       </div>
 
       {accepted.length > 0 ? (
@@ -197,6 +318,7 @@ function BrainDumpComposer({ caseId }: { caseId: string }) {
         </div>
       ) : null}
 
+      {errorMsg ? <div className="text-xs text-red-700 mt-2">{errorMsg}</div> : null}
       {suggestMut.error ? (
         <div className="text-xs text-red-700 mt-2">{(suggestMut.error as Error).message}</div>
       ) : null}
@@ -237,6 +359,214 @@ function BrainDumpComposer({ caseId }: { caseId: string }) {
         </ul>
       ) : null}
     </section>
+  );
+}
+
+
+function ModeSwitch({
+  mode, setMode, disabled,
+}: { mode: Mode; setMode: (m: Mode) => void; disabled: boolean }) {
+  const opts: { id: Mode; label: string }[] = [
+    { id: "type", label: "Type" },
+    { id: "record", label: "Record" },
+    { id: "upload", label: "Upload" },
+  ];
+  return (
+    <div className="flex border border-slate-300 rounded overflow-hidden shrink-0 text-[11px]">
+      {opts.map((o) => (
+        <button
+          key={o.id}
+          type="button"
+          disabled={disabled}
+          onClick={() => setMode(o.id)}
+          className={
+            "px-2 py-0.5 " +
+            (mode === o.id
+              ? "bg-indigo-700 text-white"
+              : "bg-white text-slate-700 hover:bg-slate-50") +
+            (disabled ? " opacity-50 cursor-not-allowed" : "")
+          }
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+
+// ── In-portal voice recorder via MediaRecorder ────────────────────────────
+// Browser-native: no extra dependencies. Records to WebM/Opus by default
+// (Chrome / Edge / Firefox); Safari falls back to mp4/aac.
+
+function VoiceRecorder({
+  onCapture, disabled,
+}: {
+  onCapture: (blob: Blob, filename: string) => void;
+  disabled: boolean;
+}) {
+  const [state, setState] = useState<"idle" | "requesting" | "recording" | "uploading">("idle");
+  const [elapsed, setElapsed] = useState(0);
+  const [error, setError] = useState("");
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const startedAtRef = useRef<number>(0);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => () => {
+    if (intervalRef.current) clearInterval(intervalRef.current);
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      mediaRecorderRef.current.stop();
+      mediaRecorderRef.current.stream.getTracks().forEach((t) => t.stop());
+    }
+  }, []);
+
+  const start = async () => {
+    setError("");
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+      setError("Browser does not support audio recording. Use Upload instead.");
+      return;
+    }
+    try {
+      setState("requesting");
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mr = new MediaRecorder(stream);
+      mediaRecorderRef.current = mr;
+      chunksRef.current = [];
+      mr.ondataavailable = (ev) => { if (ev.data.size > 0) chunksRef.current.push(ev.data); };
+      mr.onstop = async () => {
+        const mime = mr.mimeType || "audio/webm";
+        const blob = new Blob(chunksRef.current, { type: mime });
+        const ext = mime.includes("mp4") ? "mp4"
+          : mime.includes("ogg") ? "ogg"
+          : "webm";
+        const filename = `brain-dump-${new Date().toISOString().replace(/[:.]/g, "-")}.${ext}`;
+        stream.getTracks().forEach((t) => t.stop());
+        setState("uploading");
+        try {
+          await onCapture(blob, filename);
+        } finally {
+          setState("idle");
+          setElapsed(0);
+        }
+      };
+      mr.start();
+      startedAtRef.current = Date.now();
+      setElapsed(0);
+      intervalRef.current = setInterval(() => {
+        setElapsed(Math.round((Date.now() - startedAtRef.current) / 1000));
+      }, 250);
+      setState("recording");
+    } catch (err) {
+      setError((err as Error).message || "Could not access microphone.");
+      setState("idle");
+    }
+  };
+
+  const stop = () => {
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+    mediaRecorderRef.current?.stop();
+  };
+
+  const mmss = `${String(Math.floor(elapsed / 60)).padStart(2, "0")}:${String(elapsed % 60).padStart(2, "0")}`;
+
+  return (
+    <div className="border border-dashed border-slate-300 rounded p-6 bg-white text-center">
+      {state === "idle" ? (
+        <>
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={start}
+            className="px-4 py-2 text-sm rounded-full bg-red-600 text-white hover:bg-red-700 disabled:opacity-50"
+          >
+            ● Start recording
+          </button>
+          <div className="text-[11px] text-slate-500 mt-2">
+            Browser will ask for microphone permission. Recording stays local until
+            you stop; on stop it's uploaded, stored with the case, and transcribed.
+          </div>
+        </>
+      ) : null}
+      {state === "requesting" ? (
+        <div className="text-sm text-slate-700">Requesting microphone…</div>
+      ) : null}
+      {state === "recording" ? (
+        <>
+          <button
+            type="button"
+            onClick={stop}
+            className="px-4 py-2 text-sm rounded-full bg-slate-800 text-white hover:bg-slate-900"
+          >
+            ■ Stop ({mmss})
+          </button>
+          <div className="text-[11px] text-red-700 mt-2 animate-pulse">● Recording</div>
+        </>
+      ) : null}
+      {state === "uploading" ? (
+        <div className="text-sm text-slate-700">Uploading + transcribing…</div>
+      ) : null}
+      {error ? <div className="text-xs text-red-700 mt-2">{error}</div> : null}
+    </div>
+  );
+}
+
+
+// ── Drag-drop audio upload ────────────────────────────────────────────────
+
+function AudioUploadDrop({
+  onFile, disabled,
+}: {
+  onFile: (file: File) => void;
+  disabled: boolean;
+}) {
+  const [over, setOver] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  return (
+    <div
+      onDragOver={(e) => { e.preventDefault(); if (!disabled) setOver(true); }}
+      onDragLeave={() => setOver(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setOver(false);
+        if (disabled) return;
+        const f = e.dataTransfer.files?.[0];
+        if (f) onFile(f);
+      }}
+      className={
+        "border-2 border-dashed rounded p-6 text-center bg-white " +
+        (over ? "border-indigo-400 bg-indigo-50/40" : "border-slate-300") +
+        (disabled ? " opacity-50" : "")
+      }
+    >
+      <div className="text-sm text-slate-700">Drop a voice memo here</div>
+      <div className="text-[11px] text-slate-500 mt-1">
+        .m4a (iPhone Voice Memos), .mp3, .wav, .webm, .ogg — max 50 MB
+      </div>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => inputRef.current?.click()}
+        className="mt-2 px-3 py-1 text-xs rounded border border-indigo-300 bg-white text-indigo-800 hover:bg-indigo-50 disabled:opacity-50"
+      >
+        Choose file…
+      </button>
+      <input
+        ref={inputRef}
+        type="file"
+        accept="audio/*,.m4a,.mp3,.wav,.webm,.ogg"
+        hidden
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) onFile(f);
+          if (inputRef.current) inputRef.current.value = "";
+        }}
+      />
+    </div>
   );
 }
 

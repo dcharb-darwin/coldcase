@@ -611,6 +611,31 @@ export async function createBrainDump(
   return data;
 }
 
+export async function uploadAudioBrainDump(
+  caseId: string,
+  file: Blob,
+  filename: string,
+  source: "audio_recorded" | "audio_uploaded",
+): Promise<BrainDump & { transcription_error?: string }> {
+  const form = new FormData();
+  form.append("file", file, filename);
+  const { data } = await http.post(
+    `/cases/${caseId}/brain-dumps/audio?source=${source}`,
+    form,
+    { headers: { "Content-Type": "multipart/form-data" } },
+  );
+  return data;
+}
+
+export async function updateBrainDump(
+  caseId: string,
+  dumpId: string,
+  body: { transcript: string },
+): Promise<BrainDump> {
+  const { data } = await http.patch(`/cases/${caseId}/brain-dumps/${dumpId}`, body);
+  return data;
+}
+
 export async function suggestHypotheses(
   caseId: string,
   brainDumpId: string,

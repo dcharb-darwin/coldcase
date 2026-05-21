@@ -149,8 +149,9 @@ coldcase/
             │   └── ReportWorkspacePage.tsx    ← Full-route report editor
             ├── tabs/
             │   ├── BriefTab.tsx               ← Stat cards · next-steps suggester · key dates · investigators · connections · similar cases · tags · notes · identifiers
-            │   ├── PeopleTab.tsx              ← Role-grouped persons + AI extraction suggester + cross-case lookup + document mention finder
+            │   ├── PeopleTab.tsx              ← Role-grouped persons + AI extraction suggester + cross-case lookup + document mention finder + duplicate-merge banner
             │   ├── TimelineTab.tsx            ← Case events (manual + AI) · activity log (audit events) · exports `timelineColorFor` reused by ChainTab
+            │   ├── HypothesisTab.tsx          ← Brain dump (Type / Record / Upload) → AI hypothesis extraction → investigation list with cross-check findings
             │   └── ChainTab.tsx               ← Chain-integrity card · per-report chain · case-wide audit manifest PDF
             ├── components/
             │   ├── ChatPanel.tsx              ← Per-assistant-message tag bar

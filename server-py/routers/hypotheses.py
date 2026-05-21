@@ -27,8 +27,9 @@ import re
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
+from pathlib import PurePosixPath
 
 from models import (
     BrainDump, BrainDumpSource,
@@ -486,3 +487,136 @@ def accept_finding(
         },
     )
     return h.to_dict()
+
+
+# ── Audio brain dump: in-portal capture + drag-drop upload ──────────────────
+
+
+_AUDIO_MIME_PREFIXES = ("audio/",)
+_AUDIO_EXTS = {".webm", ".mp3", ".wav", ".m4a", ".ogg", ".oga", ".mp4", ".aac", ".flac"}
+_MAX_AUDIO_BYTES = 50 * 1024 * 1024  # 50 MB — long voice memo, conservative
+
+
+@router.post("/cases/{case_id}/brain-dumps/audio", status_code=201)
+@require_perm("case.edit")
+def upload_audio_brain_dump(
+    case_id: str,
+    file: UploadFile = File(...),
+    source: str = "audio_uploaded",
+    user: CurrentUser = Depends(current_user),
+):
+    """Multipart audio upload (in-portal MediaRecorder OR drag-drop file).
+
+    Stores raw audio through the artifact_store seam (same one Documents
+    use), runs the configured transcription provider, persists a BrainDump
+    with the transcript filled in. Detective then reviews + edits the
+    transcript before running suggest-hypotheses on it.
+
+    `source` declares whether this came from MediaRecorder (audio_recorded)
+    or a file drop (audio_uploaded). Both land in the same model.
+    """
+    from lib.hash import sha256_bytes
+    from services.artifact_store import get_artifact_store
+    from providers.transcription import get_transcriber
+
+    case = Case.objects(id=case_id, tenant_id=user.tenant_id).first()
+    if not case:
+        raise HTTPException(404, "Case not found")
+
+    if source not in {BrainDumpSource.AUDIO_RECORDED.value, BrainDumpSource.AUDIO_UPLOADED.value}:
+        raise HTTPException(422, f"Invalid audio source {source!r}")
+
+    data = file.file.read(_MAX_AUDIO_BYTES + 1)
+    if len(data) > _MAX_AUDIO_BYTES:
+        raise HTTPException(413, f"Audio exceeds {_MAX_AUDIO_BYTES} bytes")
+    if not data:
+        raise HTTPException(422, "Empty upload")
+
+    mime = file.content_type or "application/octet-stream"
+    safe_name = PurePosixPath(file.filename or "brain-dump.webm").name
+    if not (mime.startswith(_AUDIO_MIME_PREFIXES) or
+            PurePosixPath(safe_name).suffix.lower() in _AUDIO_EXTS):
+        raise HTTPException(415, f"Unsupported audio type: mime={mime} name={safe_name}")
+
+    sha = sha256_bytes(data)
+    stored = get_artifact_store().put(
+        f"brain-dumps/{case.id}/{sha}-{safe_name}", data, content_type=mime,
+    )
+
+    transcript = ""
+    transcript_model = ""
+    transcription_error = ""
+    try:
+        transcriber = get_transcriber()
+        result = transcriber.transcribe(data, mime, safe_name)
+        transcript = (result.text or "").strip()
+        transcript_model = result.model
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Audio transcription failed: %s", exc)
+        transcription_error = str(exc)
+
+    bd = BrainDump(
+        tenant_id=user.tenant_id, case=case,
+        source=source,
+        audio_artifact_uri=stored.uri,
+        audio_filename=safe_name,
+        audio_mime_type=mime,
+        transcript=transcript,
+        transcript_model=transcript_model,
+        created_by=user.user_id,
+    ).save()
+
+    case_audit.log_user_event(
+        user,
+        event_type=AuditEventType.BRAIN_DUMP_CREATED,
+        case_id=str(case.id),
+        summary=f"Audio brain-dump captured ({source}, {safe_name}, {len(data)} bytes)",
+        detail={
+            "brain_dump_id": str(bd.id),
+            "source": source,
+            "audio_filename": safe_name,
+            "audio_mime_type": mime,
+            "audio_bytes": len(data),
+        },
+    )
+    if transcript:
+        case_audit.log_user_event(
+            user,
+            event_type=AuditEventType.BRAIN_DUMP_TRANSCRIBED,
+            case_id=str(case.id),
+            summary=f"Audio brain-dump transcribed ({transcript_model}, {len(transcript)} chars)",
+            detail={
+                "brain_dump_id": str(bd.id),
+                "transcript_model": transcript_model,
+                "transcript_chars": len(transcript),
+            },
+        )
+
+    out = bd.to_dict()
+    if transcription_error:
+        out["transcription_error"] = transcription_error
+    return out
+
+
+class UpdateBrainDumpBody(BaseModel):
+    transcript: str = Field(min_length=1, max_length=40_000)
+
+
+@router.patch("/cases/{case_id}/brain-dumps/{dump_id}")
+@require_perm("case.edit")
+def update_brain_dump(
+    case_id: str, dump_id: str, body: UpdateBrainDumpBody,
+    user: CurrentUser = Depends(current_user),
+):
+    """Edit the transcript — the detective corrects proper nouns, badge
+    numbers, dates that Whisper missed. Audio + lineage stay intact."""
+    case = Case.objects(id=case_id, tenant_id=user.tenant_id).first()
+    if not case:
+        raise HTTPException(404, "Case not found")
+    bd = BrainDump.objects(id=dump_id, tenant_id=user.tenant_id, case=case).first()
+    if not bd:
+        raise HTTPException(404, "Brain dump not found on this case")
+    bd.transcript = body.transcript.strip()
+    bd.updated_at = datetime.utcnow()
+    bd.save()
+    return bd.to_dict()
