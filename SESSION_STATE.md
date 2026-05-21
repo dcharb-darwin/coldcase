@@ -1,7 +1,7 @@
 # Session State — Cold Case
 
 **Last Updated:** 2026-05-20
-**Last Session:** Single-day pass: §13663 hardening + Phase A workspace + Phase B tags + Phase C AI extraction + hash-chained audit integrity + AI provenance + graph (1-hop, 2-hop, similar cases, document mentions). 11 commits, all pushed to `origin/main`.
+**Last Session:** Single-day pass: §13663 hardening + Phase A workspace + Phase B tags + Phase C AI extraction + hash-chained audit integrity + AI provenance + graph (1-hop, 2-hop, similar cases, document mentions) + CaseDetailPage refactor (2,648 → 936 lines via Brief/People/Timeline/Chain tab extraction). 15 commits, all pushed to `origin/main`.
 
 ## Git identity + remote
 

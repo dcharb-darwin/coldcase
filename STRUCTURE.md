@@ -145,8 +145,13 @@ coldcase/
         └── cases/
             ├── pages/
             │   ├── CaseListPage.tsx           ← Search + class filter + tag filter + show-fixtures toggle
-            │   ├── CaseDetailPage.tsx         ← Tabbed workspace orchestrator (7 tabs + chat)
+            │   ├── CaseDetailPage.tsx         ← Tabbed workspace orchestrator (7 tabs + chat) — under 1k lines after Brief/People/Timeline/Chain extraction
             │   └── ReportWorkspacePage.tsx    ← Full-route report editor
+            ├── tabs/
+            │   ├── BriefTab.tsx               ← Stat cards · next-steps suggester · key dates · investigators · connections · similar cases · tags · notes · identifiers
+            │   ├── PeopleTab.tsx              ← Role-grouped persons + AI extraction suggester + cross-case lookup + document mention finder
+            │   ├── TimelineTab.tsx            ← Case events (manual + AI) · activity log (audit events) · exports `timelineColorFor` reused by ChainTab
+            │   └── ChainTab.tsx               ← Chain-integrity card · per-report chain · case-wide audit manifest PDF
             ├── components/
             │   ├── ChatPanel.tsx              ← Per-assistant-message tag bar
             │   ├── CitationText.tsx           ← Clickable [src: …] chips
@@ -164,7 +169,7 @@ coldcase/
 | Add a compliance check | `server-py/routers/admin_compliance.py` |
 | Add an AI suggestion endpoint | `server-py/routers/{tags,persons,timeline_entries,next_steps}.py` — same template |
 | Add a new audit-event type | `server-py/models/audit_event.py` — append to enum, no other change needed |
-| Add a tab to the case workspace | `src/features/cases/pages/CaseDetailPage.tsx` — `CaseTab` type + `CASE_TABS` array + tab content render |
+| Add a tab to the case workspace | `src/features/cases/pages/CaseDetailPage.tsx` — `CaseTab` type + `CASE_TABS` array + tab content render. Drop the implementation in `src/features/cases/tabs/<Tab>Tab.tsx` and import it. |
 | Add an artifact with AI provenance | Reuse `Provenance` embedded doc from `server-py/models/person.py` |
 | Add a derived graph query | `server-py/routers/persons.py` (cross-case) or `server-py/routers/cases.py` (similar) |
 | Change Tailwind globals | `src/index.css` — keep element rules **inside `@layer base`** (kit cascade fix) |
