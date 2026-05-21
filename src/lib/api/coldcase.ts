@@ -497,6 +497,35 @@ export async function getDashboardInsights(): Promise<DashboardInsights> {
   return data;
 }
 
+export interface InferredMention {
+  descriptor: string;
+  role_hint: PersonRole;
+  rationale: string;
+  source_doc_id: string;
+  source_doc_filename: string;
+  source_excerpt: string;
+}
+
+export async function suggestInferredMentions(caseId: string): Promise<{
+  suggestions: InferredMention[];
+  model?: string;
+  reason?: string;
+}> {
+  const { data } = await http.post(`/cases/${caseId}/persons/inferred-mentions`);
+  return data;
+}
+
+export async function acceptInferredMention(
+  caseId: string,
+  mention: InferredMention & { model: string },
+): Promise<Note> {
+  const { data } = await http.post(
+    `/cases/${caseId}/persons/inferred-mentions/accept`,
+    mention,
+  );
+  return data;
+}
+
 export interface RelatedPerson {
   name: string;
   role: PersonRole;

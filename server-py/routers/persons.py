@@ -19,7 +19,7 @@ import re as _re
 from datetime import datetime as _datetime
 
 from models import (
-    Case, Document, Person, PersonRole,
+    Case, Document, Note, NoteSubjectKind, Person, PersonRole,
     Provenance, ProvenanceSource,
 )
 from models.audit_event import AuditEventType
@@ -614,3 +614,188 @@ def suggest_persons(case_id: str, user: CurrentUser = Depends(current_user)):
             break
 
     return {"suggestions": suggestions, "model": getattr(resp, "model", "")}
+
+
+# ── AI inferred mentions (unnamed references) ──────────────────────────────
+#
+# Sibling to suggest_persons. Where that endpoint is told to SKIP generic
+# references ("the witness", "officer"), this one is told to FIND only those
+# references — descriptions, roles, pronoun-anchored entities that don't
+# have a name. Output is meant for the detective's working memory, not for
+# promotion to Person rows: accept writes a case-scoped Note with the AI
+# provenance baked into the body + a dedicated audit-event line.
+
+
+_ROLE_HINT_VALUES = _ROLE_VALUES  # reuse same vocabulary
+
+
+@router.post("/cases/{case_id}/persons/inferred-mentions")
+@require_perm("case.read")
+def suggest_inferred_mentions(case_id: str, user: CurrentUser = Depends(current_user)):
+    """Find unnamed but referenced individuals in the case documents.
+
+    Returns descriptive references (no name) — "the gas station attendant",
+    "a tall man in a red jacket", "the deputy on second shift" — with the
+    source document, an excerpt, and a role hint. The detective accepts
+    each into a case-scoped Note via the companion endpoint; this call
+    persists nothing.
+    """
+    case = Case.objects(id=case_id, tenant_id=user.tenant_id).first()
+    if not case:
+        raise HTTPException(404, "Case not found")
+
+    docs = list(Document.objects(case=case)[:8])
+    snippets: list[tuple[str, str, str]] = []  # (doc_id, filename, excerpt)
+    for d in docs:
+        try:
+            text = extract_text(d)
+        except Exception:  # noqa: BLE001
+            text = ""
+        if text:
+            snippets.append((str(d.id), d.original_filename, text[:2400]))
+    if not snippets:
+        return {"suggestions": [], "reason": "No extractable document text on this case."}
+
+    docs_block = "\n\n".join(f"=== {fn} (doc_id={did}) ===\n{txt}" for did, fn, txt in snippets)
+
+    role_list = ", ".join(sorted(_ROLE_HINT_VALUES))
+    system = (
+        "Extract individuals who are REFERENCED but NOT NAMED in cold-case "
+        "investigation documents. Examples of what to extract: 'the gas "
+        "station attendant', 'a man in a red truck', 'the deputy on second "
+        "shift', 'her brother', 'a witness who saw the suspect leave'. "
+        "Do NOT extract named individuals — those are handled separately. "
+        "For each distinct reference return a JSON object with: "
+        "`descriptor` (the role / physical description / relationship as it "
+        "appears in the text — under 15 words), "
+        f"`role_hint` (one of: {role_list}), "
+        "`rationale` (one short sentence under 20 words explaining what the "
+        "reference is and why it might matter), "
+        "`source_doc_id` (the doc_id from the document marker the reference "
+        "came from), "
+        "`source_excerpt` (the exact short quote, under 25 words, that "
+        "introduces or anchors the reference — wrap it in quotes). "
+        "Return a JSON array, up to 10 entries. Skip duplicates and skip "
+        "throwaway references that don't have any identifying detail."
+    )
+    user_prompt = (
+        f"Case: {case.case_number} — {case.title}\n"
+        f"Classification: {case.classification}\n\n"
+        f"Document excerpts:\n{docs_block}\n\n"
+        f"Return JSON only."
+    )
+
+    try:
+        provider = get_llm_provider()
+        resp = provider.chat(system=system, user=user_prompt)
+        raw = resp.content if hasattr(resp, "content") else ""
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Inferred-mention suggestion provider failed: %s", exc)
+        return {"suggestions": [], "reason": f"LLM unavailable: {exc}"}
+
+    doc_filename_by_id = {did: fn for did, fn, _ in snippets}
+    parsed = _extract_json_list(raw)
+    suggestions: list[dict] = []
+    seen: set[str] = set()
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        descriptor = (item.get("descriptor") or "").strip()
+        if not descriptor:
+            continue
+        key = descriptor.lower()
+        if key in seen:
+            continue
+        role_hint = (item.get("role_hint") or "other").strip().lower()
+        if role_hint not in _ROLE_HINT_VALUES:
+            role_hint = "other"
+        source_doc_id = (item.get("source_doc_id") or "").strip()
+        # Reject hallucinated doc ids — the model only sees ids we passed in.
+        if source_doc_id and source_doc_id not in doc_filename_by_id:
+            source_doc_id = ""
+        seen.add(key)
+        suggestions.append({
+            "descriptor": descriptor,
+            "role_hint": role_hint,
+            "rationale": (item.get("rationale") or "").strip(),
+            "source_doc_id": source_doc_id,
+            "source_doc_filename": doc_filename_by_id.get(source_doc_id, ""),
+            "source_excerpt": (item.get("source_excerpt") or "").strip(),
+        })
+        if len(suggestions) >= 10:
+            break
+
+    return {"suggestions": suggestions, "model": getattr(resp, "model", "")}
+
+
+class AcceptInferredMentionBody(BaseModel):
+    descriptor: str = Field(min_length=1, max_length=400)
+    role_hint: str = Field(min_length=1, max_length=40)
+    rationale: str = Field(default="", max_length=400)
+    source_doc_id: str = Field(default="", max_length=64)
+    source_doc_filename: str = Field(default="", max_length=300)
+    source_excerpt: str = Field(default="", max_length=600)
+    model: str = Field(default="", max_length=120)
+
+
+@router.post("/cases/{case_id}/persons/inferred-mentions/accept", status_code=201)
+@require_perm("case.edit")
+def accept_inferred_mention(
+    case_id: str,
+    body: AcceptInferredMentionBody,
+    user: CurrentUser = Depends(current_user),
+):
+    """Persist an accepted inferred-mention as a case-scoped Note + audit event.
+
+    The note body carries human-readable provenance ("Inferred by AI · …") so
+    the lineage is visible inline; the audit event gives the city attorney a
+    structured "AI clue accepted" entry on the chain.
+    """
+    case = Case.objects(id=case_id, tenant_id=user.tenant_id).first()
+    if not case:
+        raise HTTPException(404, "Case not found")
+
+    role_hint = body.role_hint.strip().lower()
+    if role_hint not in _ROLE_HINT_VALUES:
+        role_hint = "other"
+
+    src_line = ""
+    if body.source_doc_filename:
+        src_line = f"\nSource: {body.source_doc_filename}"
+    elif body.source_doc_id:
+        src_line = f"\nSource doc id: {body.source_doc_id}"
+    excerpt_line = f'\nExcerpt: "{body.source_excerpt}"' if body.source_excerpt else ""
+    rationale_line = f"\nWhy it matters: {body.rationale}" if body.rationale else ""
+
+    note_body = (
+        f"[{role_hint}] {body.descriptor}\n"
+        f"\nInferred by AI ({body.model or 'unknown model'}). "
+        f"Officer {user.user_id} accepted this as a working clue."
+        f"{rationale_line}{src_line}{excerpt_line}"
+    )
+
+    note = Note(
+        tenant_id=user.tenant_id, case=case,
+        subject_kind=NoteSubjectKind.CASE.value,
+        subject_id=str(case.id),
+        body=note_body,
+        created_by=user.user_id, updated_by=user.user_id,
+    ).save()
+
+    case_audit.log_user_event(
+        user,
+        event_type=AuditEventType.INFERRED_MENTION_ACCEPTED_FROM_AI,
+        case_id=str(case.id),
+        summary=f"Officer accepted AI-inferred reference: '{body.descriptor[:60]}'",
+        detail={
+            "descriptor": body.descriptor,
+            "role_hint": role_hint,
+            "rationale": body.rationale,
+            "source_doc_id": body.source_doc_id,
+            "source_doc_filename": body.source_doc_filename,
+            "model": body.model,
+            "note_id": str(note.id),
+        },
+    )
+
+    return note.to_dict()

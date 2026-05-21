@@ -7,9 +7,9 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
-  createPerson, deletePerson, getPersonMentions, getPersonNetwork,
-  listPersons, searchPersons, suggestCasePersons,
-  type Person, type PersonRole, type PersonSuggestion,
+  acceptInferredMention, createPerson, deletePerson, getPersonMentions, getPersonNetwork,
+  listPersons, searchPersons, suggestCasePersons, suggestInferredMentions,
+  type InferredMention, type Person, type PersonRole, type PersonSuggestion,
 } from "@/lib/api/coldcase";
 import { ROUTES, setHashPath } from "@/shell/routes";
 
@@ -328,6 +328,7 @@ export default function PeopleTab({ caseId }: { caseId: string }) {
         </div>
 
         <PersonSuggestions caseId={caseId} />
+        <InferredMentions caseId={caseId} />
 
 
         {adding ? (
@@ -462,5 +463,125 @@ export default function PeopleTab({ caseId }: { caseId: string }) {
         )}
       </div>
     </div>
+  );
+}
+
+// ── Inferred mentions (unnamed references) ────────────────────────────────
+// Sibling to PersonSuggestions. Where that finds NAMED individuals, this
+// surfaces descriptive references ("the gas station attendant", "a man in
+// a red truck") that the detective should follow up on. Accept saves the
+// mention as a case-scoped Note with AI provenance baked into the body +
+// a dedicated audit event for the chain.
+
+function InferredMentions({ caseId }: { caseId: string }) {
+  const qc = useQueryClient();
+  const [run, setRun] = useState(false);
+  const { data, isFetching, error, refetch } = useQuery({
+    queryKey: ["inferred-mentions", caseId],
+    queryFn: () => suggestInferredMentions(caseId),
+    enabled: run,
+    staleTime: 5 * 60_000,
+  });
+  const [dismissed, setDismissed] = useState<Set<string>>(new Set());
+
+  const acceptMut = useMutation({
+    mutationFn: (m: InferredMention) => acceptInferredMention(caseId, {
+      ...m,
+      model: data?.model ?? "",
+    }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["case-notes", caseId] });
+    },
+  });
+
+  const visible = (data?.suggestions ?? []).filter((s) => !dismissed.has(s.descriptor));
+
+  return (
+    <section className="border border-purple-200 bg-purple-50/30 rounded p-3 mt-3">
+      <div className="flex items-baseline justify-between gap-2 mb-2">
+        <div>
+          <h3 className="text-[12px] font-semibold text-slate-900">Unnamed references with AI</h3>
+          <div className="text-[11px] text-slate-500">
+            Find people referenced but not named — "the gas station attendant",
+            "a man in a red truck", "her aunt". Accept saves the mention as a
+            working clue on this case.
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => { setRun(true); setDismissed(new Set()); refetch(); }}
+          disabled={isFetching}
+          className="px-2.5 py-1 text-xs rounded border border-purple-300 bg-white text-purple-800 hover:bg-purple-50 disabled:opacity-50 shrink-0"
+        >
+          {isFetching ? "Reading docs…" : run ? "Refresh" : "Find references"}
+        </button>
+      </div>
+
+      {error ? <div className="text-xs text-red-700">{(error as Error).message}</div> : null}
+      {data?.reason ? <div className="text-xs text-slate-500 italic">{data.reason}</div> : null}
+
+      {run && !isFetching && visible.length === 0 && !error && !data?.reason ? (
+        <div className="text-xs text-slate-500 italic">
+          {data?.suggestions.length
+            ? "All references handled."
+            : "No unnamed references found in the documents."}
+        </div>
+      ) : null}
+
+      {visible.length > 0 ? (
+        <ul className="space-y-1.5 mt-1">
+          {visible.map((m) => {
+            const accepted = acceptMut.isSuccess && acceptMut.variables?.descriptor === m.descriptor;
+            const roleDef = PERSON_ROLES.find((r) => r.value === m.role_hint) ?? PERSON_ROLES[5]!;
+            return (
+              <li
+                key={m.descriptor}
+                className="flex items-start gap-2 p-2 bg-white border border-slate-200 rounded"
+              >
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-baseline gap-2 flex-wrap">
+                    <span className={`inline-flex items-center px-2 py-0.5 rounded-full border text-[10px] capitalize shrink-0 ${roleDef.color}`}>
+                      {roleDef.label}
+                    </span>
+                    <span className="text-sm text-slate-900 font-medium">{m.descriptor}</span>
+                  </div>
+                  {m.rationale ? (
+                    <div className="text-[11px] text-slate-600 italic mt-1 leading-snug">{m.rationale}</div>
+                  ) : null}
+                  {m.source_excerpt ? (
+                    <div className="text-[11px] text-slate-700 mt-1 pl-2 border-l-2 border-purple-200">
+                      "{m.source_excerpt}"
+                    </div>
+                  ) : null}
+                  {m.source_doc_filename ? (
+                    <div className="text-[10px] text-slate-400 mt-0.5 font-mono">
+                      {m.source_doc_filename}
+                    </div>
+                  ) : null}
+                </div>
+                <div className="flex flex-col gap-1 shrink-0">
+                  <button
+                    type="button"
+                    disabled={accepted || acceptMut.isPending}
+                    onClick={() => acceptMut.mutate(m)}
+                    className="px-2 py-0.5 text-[11px] rounded bg-purple-700 text-white hover:bg-purple-800 disabled:opacity-50"
+                    title="Save as a working clue on this case"
+                  >
+                    {accepted ? "Saved ✓" : "Save clue"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDismissed((p) => new Set(p).add(m.descriptor))}
+                    className="px-2 py-0.5 text-[11px] rounded border border-slate-200 text-slate-600 hover:bg-slate-100"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
+    </section>
   );
 }

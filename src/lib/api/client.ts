@@ -11,9 +11,13 @@ import { impersonation } from "../../launchpad-admin";
 
 export const API_BASE_URL = "/launchpad/coldcase/api";
 
+// 60s timeout to accommodate LLM calls (person/tag/timeline/inferred-mention
+// suggesters, next-step suggester, chat sends). 10s was too tight for the
+// inferred-mention extraction on multi-doc cases — OpenAI routinely takes
+// 8-15s for that prompt size.
 const http: AxiosInstance = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 10000,
+  timeout: 60000,
 });
 
 http.interceptors.request.use((config) => {
