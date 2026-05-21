@@ -1,8 +1,8 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
-  listAuditEvents, listCases, listTags,
-  type AuditEvent, type Case,
+  getDashboardInsights, listAuditEvents, listCases, listTags,
+  type AuditEvent, type Case, type RecurringPerson, type SimilarCasePair,
 } from "@/lib/api/coldcase";
 import { ROUTES, setHashPath } from "@/shell/routes";
 
@@ -57,6 +57,8 @@ export default function DashboardPage() {
         <NeedsYourAction cases={myCases} />
         <RecentActivity events={recentEvents?.events ?? []} />
       </div>
+
+      <CrossCaseInsights />
 
       <MyCases cases={myCases} loading={casesLoading} />
     </div>
@@ -285,6 +287,140 @@ function MyCases({ cases, loading }: { cases: Case[]; loading: boolean }) {
         </button>
       </div>
     </Card>
+  );
+}
+
+function CrossCaseInsights() {
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["dashboard", "insights"],
+    queryFn: getDashboardInsights,
+    staleTime: 60_000,
+  });
+
+  if (isLoading) {
+    return (
+      <Card title="Cross-case insights">
+        <div className="text-xs text-slate-500">Computing…</div>
+      </Card>
+    );
+  }
+  if (error) {
+    return (
+      <Card title="Cross-case insights">
+        <div className="text-xs text-red-700">{(error as Error).message}</div>
+      </Card>
+    );
+  }
+  const recurring = data?.recurring_persons ?? [];
+  const pairs = data?.similar_case_pairs ?? [];
+  if (recurring.length === 0 && pairs.length === 0) {
+    return (
+      <Card title="Cross-case insights">
+        <p className="text-xs text-slate-500">
+          Nothing recurring yet. People who appear on multiple of your cases —
+          and tag-similar case pairs — will surface here as your caseload grows.
+        </p>
+      </Card>
+    );
+  }
+
+  return (
+    <Card title="Cross-case insights">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4">
+        <div>
+          <h3 className="text-[12px] font-semibold uppercase tracking-wide text-slate-500 mb-1.5">
+            Recurring people
+          </h3>
+          {recurring.length === 0 ? (
+            <p className="text-xs text-slate-500 italic">
+              No person appears on more than one of your cases yet.
+            </p>
+          ) : (
+            <ul className="space-y-1.5">
+              {recurring.map((r) => <RecurringPersonRow key={`${r.name}-${r.role}`} row={r} />)}
+            </ul>
+          )}
+        </div>
+        <div>
+          <h3 className="text-[12px] font-semibold uppercase tracking-wide text-slate-500 mb-1.5">
+            Tag-similar case pairs
+          </h3>
+          {pairs.length === 0 ? (
+            <p className="text-xs text-slate-500 italic">
+              No tag overlap with your other cases yet.
+            </p>
+          ) : (
+            <ul className="space-y-1.5">
+              {pairs.map((p) => <SimilarPairRow key={`${p.your_case_id}-${p.other_case_id}`} row={p} />)}
+            </ul>
+          )}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function RecurringPersonRow({ row }: { row: RecurringPerson }) {
+  const danger = row.role === "suspect" || row.role === "person_of_interest";
+  const firstCaseId = row.your_case_ids[0];
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={() => firstCaseId && setHashPath(`${ROUTES.casePrefix}${firstCaseId}`)}
+        className="w-full text-left border border-slate-200 rounded p-2 hover:border-blue-400 hover:bg-blue-50/40"
+        title={`Open ${row.your_case_numbers[0] ?? "first case"}`}
+      >
+        <div className="flex items-baseline gap-2">
+          <span className="font-medium text-slate-900 truncate flex-1">{row.name}</span>
+          <span className={
+            "text-[11px] capitalize " + (danger ? "text-red-700 font-medium" : "text-slate-500")
+          }>
+            {row.role.replace("_", " ")}
+          </span>
+          {row.ai_sourced_any ? (
+            <span className="text-[10px] uppercase tracking-wide text-purple-700">AI</span>
+          ) : null}
+        </div>
+        <div className="text-[11px] text-slate-500 mt-0.5 font-mono">
+          {row.case_count} cases · {row.your_case_numbers.join(" · ")}
+        </div>
+      </button>
+    </li>
+  );
+}
+
+function SimilarPairRow({ row }: { row: SimilarCasePair }) {
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={() => setHashPath(`${ROUTES.casePrefix}${row.your_case_id}`)}
+        className="w-full text-left border border-slate-200 rounded p-2 hover:border-blue-400 hover:bg-blue-50/40"
+      >
+        <div className="flex items-baseline gap-2">
+          <span className="font-mono text-xs text-slate-700">{row.your_case_number}</span>
+          <span className="text-slate-400 text-xs">↔</span>
+          <span className="font-mono text-xs text-slate-700">{row.other_case_number}</span>
+          {!row.other_is_yours ? (
+            <span className="text-[10px] uppercase tracking-wide text-slate-400">other</span>
+          ) : null}
+          <span className="ml-auto text-[11px] font-mono text-slate-500">
+            {Math.round(row.score * 100)}%
+          </span>
+        </div>
+        <div className="flex flex-wrap gap-1 mt-1">
+          {row.shared_tag_labels.map((lbl) => (
+            <span
+              key={lbl}
+              className="inline-flex items-center px-1.5 py-0.5 rounded-full border border-slate-200 bg-slate-50 text-slate-700 text-[10px]"
+            >
+              <span className="opacity-60 mr-0.5">#</span>{lbl}
+            </span>
+          ))}
+        </div>
+      </button>
+    </li>
   );
 }
 

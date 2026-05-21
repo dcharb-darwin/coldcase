@@ -464,6 +464,39 @@ export async function getSimilarCases(caseId: string): Promise<{
   return data;
 }
 
+export interface RecurringPerson {
+  name: string;
+  role: PersonRole;
+  case_count: number;
+  your_case_ids: string[];
+  your_case_numbers: string[];
+  ai_sourced_any: boolean;
+}
+
+export interface SimilarCasePair {
+  your_case_id: string;
+  your_case_number: string;
+  your_case_title: string;
+  other_case_id: string;
+  other_case_number: string;
+  other_case_title: string;
+  other_case_classification: string;
+  other_is_yours: boolean;
+  score: number;
+  shared_tag_slugs: string[];
+  shared_tag_labels: string[];
+}
+
+export interface DashboardInsights {
+  recurring_persons: RecurringPerson[];
+  similar_case_pairs: SimilarCasePair[];
+}
+
+export async function getDashboardInsights(): Promise<DashboardInsights> {
+  const { data } = await http.get("/dashboard/insights");
+  return data;
+}
+
 export interface RelatedPerson {
   name: string;
   role: PersonRole;
