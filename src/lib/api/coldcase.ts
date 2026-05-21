@@ -546,6 +546,137 @@ export async function mergePersons(
   return data;
 }
 
+// ── Hypotheses + brain dumps ────────────────────────────────────────────────
+
+export type HypothesisStatus = "investigating" | "confirmed" | "disproved" | "superseded";
+export type HypothesisFindingKind = "supporting" | "contradicting" | "gap";
+
+export interface BrainDump {
+  id: string;
+  case_id: string;
+  source: "typed" | "audio_recorded" | "audio_uploaded";
+  audio_artifact_uri: string;
+  audio_filename: string;
+  audio_mime_type: string;
+  audio_duration_seconds: string;
+  transcript: string;
+  transcript_model: string;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface HypothesisFinding {
+  kind: HypothesisFindingKind;
+  excerpt: string;
+  rationale: string;
+  source_doc_id: string;
+  source_doc_filename: string;
+  accepted_by: string;
+  accepted_at: string | null;
+  suggested_by_model: string;
+}
+
+export interface Hypothesis {
+  id: string;
+  case_id: string;
+  title: string;
+  body: string;
+  rationale: string;
+  status: HypothesisStatus;
+  brain_dump_id: string | null;
+  proposed_by_model: string;
+  proposed_at: string | null;
+  accepted_by: string;
+  accepted_at: string | null;
+  findings: HypothesisFinding[];
+  created_by: string;
+  created_at: string;
+  updated_by: string;
+  updated_at: string;
+  status_changed_at: string | null;
+}
+
+export interface HypothesisSuggestion {
+  title: string;
+  body: string;
+  rationale: string;
+}
+
+export async function createBrainDump(
+  caseId: string,
+  body: { transcript: string },
+): Promise<BrainDump> {
+  const { data } = await http.post(`/cases/${caseId}/brain-dumps`, body);
+  return data;
+}
+
+export async function suggestHypotheses(
+  caseId: string,
+  brainDumpId: string,
+): Promise<{ brain_dump_id: string; suggestions: HypothesisSuggestion[]; model?: string; reason?: string }> {
+  const { data } = await http.post(
+    `/cases/${caseId}/brain-dumps/${brainDumpId}/suggest-hypotheses`,
+  );
+  return data;
+}
+
+export async function createHypothesis(
+  caseId: string,
+  body: {
+    title: string;
+    body?: string;
+    rationale?: string;
+    brain_dump_id?: string;
+    model?: string;
+  },
+): Promise<Hypothesis> {
+  const { data } = await http.post(`/cases/${caseId}/hypotheses`, body);
+  return data;
+}
+
+export async function listHypotheses(caseId: string): Promise<{ hypotheses: Hypothesis[] }> {
+  const { data } = await http.get(`/cases/${caseId}/hypotheses`);
+  return data;
+}
+
+export async function updateHypothesis(
+  caseId: string,
+  id: string,
+  body: { title?: string; body?: string; status?: HypothesisStatus },
+): Promise<Hypothesis> {
+  const { data } = await http.patch(`/cases/${caseId}/hypotheses/${id}`, body);
+  return data;
+}
+
+export async function deleteHypothesis(caseId: string, id: string): Promise<void> {
+  await http.delete(`/cases/${caseId}/hypotheses/${id}`);
+}
+
+export async function checkHypothesis(
+  caseId: string,
+  id: string,
+): Promise<{ findings: Omit<HypothesisFinding, "accepted_by" | "accepted_at" | "suggested_by_model">[]; model?: string; reason?: string }> {
+  const { data } = await http.post(`/cases/${caseId}/hypotheses/${id}/check`);
+  return data;
+}
+
+export async function acceptHypothesisFinding(
+  caseId: string,
+  id: string,
+  body: {
+    kind: HypothesisFindingKind;
+    excerpt?: string;
+    rationale?: string;
+    source_doc_id?: string;
+    source_doc_filename?: string;
+    model?: string;
+  },
+): Promise<Hypothesis> {
+  const { data } = await http.post(`/cases/${caseId}/hypotheses/${id}/findings`, body);
+  return data;
+}
+
 export interface RelatedPerson {
   name: string;
   role: PersonRole;

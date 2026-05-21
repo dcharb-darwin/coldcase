@@ -54,6 +54,14 @@ class AuditEventType(str, Enum):
     NEXT_STEP_ACCEPTED_FROM_AI = "next_step.accepted_from_ai"
     INFERRED_MENTION_ACCEPTED_FROM_AI = "inferred_mention.accepted_from_ai"
     PERSON_MERGED = "person.merged"
+    # Brain dumps + hypothesis lifecycle
+    BRAIN_DUMP_CREATED = "brain_dump.created"
+    BRAIN_DUMP_TRANSCRIBED = "brain_dump.transcribed"
+    HYPOTHESIS_CREATED = "hypothesis.created"
+    HYPOTHESIS_ACCEPTED_FROM_AI = "hypothesis.accepted_from_ai"
+    HYPOTHESIS_CHECKED = "hypothesis.checked"
+    HYPOTHESIS_FINDING_ACCEPTED = "hypothesis.finding_accepted"
+    HYPOTHESIS_STATUS_CHANGED = "hypothesis.status_changed"
 
 
 class AuditEvent(MEDocument):

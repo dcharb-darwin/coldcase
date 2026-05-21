@@ -15,6 +15,10 @@ from models.tag import Tag, TagAssignment, TagKind, TagSubjectKind, TAG_COLOR_CH
 from models.person import Person, PersonRole, Provenance, ProvenanceSource
 from models.timeline_entry import TimelineEntry, TimelineEntrySource
 from models.note import Note, NoteSubjectKind
+from models.hypothesis import (
+    BrainDump, BrainDumpSource,
+    Hypothesis, HypothesisStatus, HypothesisFinding, HypothesisFindingKind,
+)
 
 __all__ = [
     "Case", "CaseStatus", "CaseClassification", "RetentionPolicy",
@@ -30,4 +34,6 @@ __all__ = [
     "Person", "PersonRole", "Provenance", "ProvenanceSource",
     "TimelineEntry", "TimelineEntrySource",
     "Note", "NoteSubjectKind",
+    "BrainDump", "BrainDumpSource",
+    "Hypothesis", "HypothesisStatus", "HypothesisFinding", "HypothesisFindingKind",
 ]
