@@ -483,18 +483,25 @@ function InferredMentions({ caseId }: { caseId: string }) {
     staleTime: 5 * 60_000,
   });
   const [dismissed, setDismissed] = useState<Set<string>>(new Set());
+  // Accepted descriptors disappear from the list immediately and tally
+  // into a banner. The detective shouldn't have to switch tabs to confirm
+  // the click landed.
+  const [savedDescriptors, setSavedDescriptors] = useState<string[]>([]);
 
   const acceptMut = useMutation({
     mutationFn: (m: InferredMention) => acceptInferredMention(caseId, {
       ...m,
       model: data?.model ?? "",
     }),
-    onSuccess: () => {
+    onSuccess: (_note, m) => {
       qc.invalidateQueries({ queryKey: ["case-notes", caseId] });
+      setSavedDescriptors((prev) => prev.includes(m.descriptor) ? prev : [...prev, m.descriptor]);
     },
   });
 
-  const visible = (data?.suggestions ?? []).filter((s) => !dismissed.has(s.descriptor));
+  const visible = (data?.suggestions ?? []).filter(
+    (s) => !dismissed.has(s.descriptor) && !savedDescriptors.includes(s.descriptor),
+  );
 
   return (
     <section className="border border-purple-200 bg-purple-50/30 rounded p-3 mt-3">
@@ -509,7 +516,15 @@ function InferredMentions({ caseId }: { caseId: string }) {
         </div>
         <button
           type="button"
-          onClick={() => { setRun(true); setDismissed(new Set()); refetch(); }}
+          onClick={() => {
+            setRun(true);
+            setDismissed(new Set());
+            setSavedDescriptors([]);
+            // Clear the cached list so the user sees a fresh "Reading docs…"
+            // state instead of stale results sitting in place.
+            qc.setQueryData(["inferred-mentions", caseId], undefined);
+            refetch();
+          }}
           disabled={isFetching}
           className="px-2.5 py-1 text-xs rounded border border-purple-300 bg-white text-purple-800 hover:bg-purple-50 disabled:opacity-50 shrink-0"
         >
@@ -517,21 +532,39 @@ function InferredMentions({ caseId }: { caseId: string }) {
         </button>
       </div>
 
+      {/* Saved-this-session banner: explicit count + cross-tab pointer so
+          "Save clue" doesn't look like it did nothing. */}
+      {savedDescriptors.length > 0 ? (
+        <div className="text-[11px] text-emerald-800 bg-emerald-50 border border-emerald-200 rounded px-2 py-1 mb-2">
+          ✓ Saved {savedDescriptors.length} clue{savedDescriptors.length === 1 ? "" : "s"} to case notes —{" "}
+          <button
+            type="button"
+            onClick={() => setHashPath(`${ROUTES.casePrefix}${caseId}?tab=brief`)}
+            className="underline hover:text-emerald-900"
+          >
+            view on Brief tab
+          </button>
+        </div>
+      ) : null}
+
+      {isFetching ? (
+        <div className="text-xs text-slate-500 italic">Reading documents — this can take 10–20s on long case files.</div>
+      ) : null}
       {error ? <div className="text-xs text-red-700">{(error as Error).message}</div> : null}
-      {data?.reason ? <div className="text-xs text-slate-500 italic">{data.reason}</div> : null}
+      {!isFetching && data?.reason ? <div className="text-xs text-slate-500 italic">{data.reason}</div> : null}
 
       {run && !isFetching && visible.length === 0 && !error && !data?.reason ? (
         <div className="text-xs text-slate-500 italic">
           {data?.suggestions.length
-            ? "All references handled."
+            ? "All references handled. Click Refresh to scan the documents again."
             : "No unnamed references found in the documents."}
         </div>
       ) : null}
 
-      {visible.length > 0 ? (
+      {!isFetching && visible.length > 0 ? (
         <ul className="space-y-1.5 mt-1">
           {visible.map((m) => {
-            const accepted = acceptMut.isSuccess && acceptMut.variables?.descriptor === m.descriptor;
+            const isPending = acceptMut.isPending && acceptMut.variables?.descriptor === m.descriptor;
             const roleDef = PERSON_ROLES.find((r) => r.value === m.role_hint) ?? PERSON_ROLES[5]!;
             return (
               <li
@@ -562,12 +595,12 @@ function InferredMentions({ caseId }: { caseId: string }) {
                 <div className="flex flex-col gap-1 shrink-0">
                   <button
                     type="button"
-                    disabled={accepted || acceptMut.isPending}
+                    disabled={isPending}
                     onClick={() => acceptMut.mutate(m)}
                     className="px-2 py-0.5 text-[11px] rounded bg-purple-700 text-white hover:bg-purple-800 disabled:opacity-50"
-                    title="Save as a working clue on this case"
+                    title="Save as a working clue on the Brief tab"
                   >
-                    {accepted ? "Saved ✓" : "Save clue"}
+                    {isPending ? "Saving…" : "Save clue"}
                   </button>
                   <button
                     type="button"

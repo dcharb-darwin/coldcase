@@ -98,6 +98,13 @@ export default function CaseDetailPage({ caseId }: CaseDetailPageProps) {
   useEffect(() => {
     if (!data) return;
     const q = parseHashQuery(route);
+    // ?tab=<id> — cross-tab navigation (used by the InferredMentions
+    // "view on Brief tab" link). Honored independently of ?doc=&line=.
+    if (q.tab && (CASE_TABS.some((t) => t.id === q.tab))) {
+      setActiveTab(q.tab as CaseTab);
+      setHashPath(`${ROUTES.casePrefix}${caseId}`);
+      return;
+    }
     if (!q.doc || !q.line) return;
     const target = data.documents.find((d) => d.original_filename === q.doc);
     if (!target) {
