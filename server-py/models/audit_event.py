@@ -53,6 +53,7 @@ class AuditEventType(str, Enum):
     TAG_ACCEPTED_FROM_AI = "tag.accepted_from_ai"
     NEXT_STEP_ACCEPTED_FROM_AI = "next_step.accepted_from_ai"
     INFERRED_MENTION_ACCEPTED_FROM_AI = "inferred_mention.accepted_from_ai"
+    PERSON_MERGED = "person.merged"
 
 
 class AuditEvent(MEDocument):

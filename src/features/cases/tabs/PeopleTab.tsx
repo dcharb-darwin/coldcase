@@ -7,9 +7,11 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
-  acceptInferredMention, createPerson, deletePerson, getPersonMentions, getPersonNetwork,
-  listPersons, searchPersons, suggestCasePersons, suggestInferredMentions,
-  type InferredMention, type Person, type PersonRole, type PersonSuggestion,
+  acceptInferredMention, createPerson, deletePerson, getDuplicatePersons,
+  getPersonMentions, getPersonNetwork, listPersons, mergePersons, searchPersons,
+  suggestCasePersons, suggestInferredMentions,
+  type DuplicatePersonPair, type InferredMention, type Person, type PersonRole,
+  type PersonSuggestion,
 } from "@/lib/api/coldcase";
 import { ROUTES, setHashPath } from "@/shell/routes";
 
@@ -329,6 +331,7 @@ export default function PeopleTab({ caseId }: { caseId: string }) {
 
         <PersonSuggestions caseId={caseId} />
         <InferredMentions caseId={caseId} />
+        <DuplicatePersonsBanner caseId={caseId} />
 
 
         {adding ? (
@@ -616,5 +619,104 @@ function InferredMentions({ caseId }: { caseId: string }) {
         </ul>
       ) : null}
     </section>
+  );
+}
+
+// ── Likely-duplicate persons (post-AI-accept cleanup) ─────────────────────
+// The AI suggester sometimes proposes the same person twice with different
+// surface forms ("B. Aragón" + "Brenda Aragón") and the detective accepts
+// both before noticing. Backend detects pairs by surname + first-token
+// initial match; merge moves the dup's descriptor + notes into the primary
+// and deletes the dup, with a PERSON_MERGED audit event on the chain.
+
+function DuplicatePersonsBanner({ caseId }: { caseId: string }) {
+  const qc = useQueryClient();
+  const { data, isLoading } = useQuery({
+    queryKey: ["person-duplicates", caseId],
+    queryFn: () => getDuplicatePersons(caseId),
+    staleTime: 30_000,
+  });
+
+  const mergeMut = useMutation({
+    mutationFn: (vars: { primary_id: string; duplicate_id: string }) =>
+      mergePersons(caseId, vars),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["case-persons", caseId] });
+      qc.invalidateQueries({ queryKey: ["person-duplicates", caseId] });
+    },
+  });
+
+  const pairs = data?.pairs ?? [];
+  if (isLoading || pairs.length === 0) return null;
+
+  return (
+    <section className="border border-amber-300 bg-amber-50/60 rounded p-3 mt-3">
+      <div className="flex items-baseline justify-between mb-1.5">
+        <h3 className="text-[12px] font-semibold text-amber-900">
+          Likely duplicate{pairs.length === 1 ? "" : "s"} ({pairs.length})
+        </h3>
+        <span className="text-[11px] text-amber-800">
+          Same surname + matching first-name initial.
+        </span>
+      </div>
+      <p className="text-[11px] text-amber-800/80 mb-2">
+        Detective decides. Merging keeps the longer name as primary; the
+        other's descriptor + notes are appended to the primary's notes
+        and the duplicate row is removed. Audited on the chain.
+      </p>
+      <ul className="space-y-2">
+        {pairs.map((p) => <DuplicatePairRow key={`${p.primary.id}-${p.duplicate.id}`} pair={p} onMerge={(vars) => mergeMut.mutate(vars)} pending={mergeMut.isPending && mergeMut.variables?.duplicate_id === p.duplicate.id} />)}
+      </ul>
+    </section>
+  );
+}
+
+function DuplicatePairRow({
+  pair, onMerge, pending,
+}: {
+  pair: DuplicatePersonPair;
+  onMerge: (vars: { primary_id: string; duplicate_id: string }) => void;
+  pending: boolean;
+}) {
+  const { primary, duplicate } = pair;
+  return (
+    <li className="border border-amber-200 rounded p-2 bg-white">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div>
+          <div className="text-[10px] uppercase tracking-wide text-emerald-700 font-semibold">
+            Keep
+          </div>
+          <div className="text-sm font-medium text-slate-900 mt-0.5">{primary.name}</div>
+          {primary.descriptor ? (
+            <div className="text-[11px] text-slate-600">{primary.descriptor}</div>
+          ) : null}
+          {primary.notes ? (
+            <div className="text-[11px] text-slate-500 italic mt-0.5">{primary.notes}</div>
+          ) : null}
+        </div>
+        <div className="opacity-70">
+          <div className="text-[10px] uppercase tracking-wide text-red-700 font-semibold">
+            Merge into above
+          </div>
+          <div className="text-sm font-medium text-slate-900 mt-0.5">{duplicate.name}</div>
+          {duplicate.descriptor ? (
+            <div className="text-[11px] text-slate-600">{duplicate.descriptor}</div>
+          ) : null}
+          {duplicate.notes ? (
+            <div className="text-[11px] text-slate-500 italic mt-0.5">{duplicate.notes}</div>
+          ) : null}
+        </div>
+      </div>
+      <div className="mt-2 flex justify-end">
+        <button
+          type="button"
+          disabled={pending}
+          onClick={() => onMerge({ primary_id: primary.id, duplicate_id: duplicate.id })}
+          className="px-2.5 py-1 text-[11px] rounded bg-amber-700 text-white hover:bg-amber-800 disabled:opacity-50"
+        >
+          {pending ? "Merging…" : `Keep "${primary.name}", merge "${duplicate.name}"`}
+        </button>
+      </div>
+    </li>
   );
 }

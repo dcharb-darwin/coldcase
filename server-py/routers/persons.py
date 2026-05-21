@@ -799,3 +799,131 @@ def accept_inferred_mention(
     )
 
     return note.to_dict()
+
+
+# ── Duplicate detection + merge ────────────────────────────────────────────
+#
+# The AI suggester can propose the same person twice with different surface
+# forms — "B. Aragón" and "Brenda Aragón" both get accepted onto the case
+# before the detective notices. We surface pairs the heuristic considers
+# likely duplicates and let the detective merge explicitly. Never auto-merge.
+
+
+def _name_tokens(name: str) -> list[str]:
+    """Lowercased token list with honorifics stripped, punctuation collapsed
+    to spaces. Reused for the dup heuristic."""
+    s = (name or "").strip().lower()
+    s = _re.sub(r"\b(dr|mr|mrs|ms|mx|prof|rev|sgt|det|capt|lt|hon)\.?\s+", "", s)
+    s = _re.sub(r"[^\w\s]+", " ", s)
+    s = _re.sub(r"\s+", " ", s).strip()
+    return [t for t in s.split(" ") if t]
+
+
+def _likely_duplicate(a_name: str, b_name: str) -> bool:
+    """Heuristic — true when two names on the same case probably refer to
+    the same person. Conservative on purpose: false-positives waste the
+    detective's time, false-negatives are cheap (they can merge manually).
+
+    Triggers:
+    - Identical normalised token sequence.
+    - Same surname (last token) AND first tokens share an initial AND at
+      least one first token is a single letter or two-letter abbreviation
+      ("B." / "Br." vs full "Brenda"). This is the screenshot case.
+    """
+    a = _name_tokens(a_name)
+    b = _name_tokens(b_name)
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    if a[-1] != b[-1]:
+        return False
+    a0, b0 = a[0], b[0]
+    if a0[0] != b0[0]:
+        return False
+    # One side must be initial-shaped (1-2 chars) to be confident.
+    return len(a0) <= 2 or len(b0) <= 2
+
+
+@router.get("/cases/{case_id}/persons/duplicates")
+@require_perm("case.read")
+def list_duplicate_candidates(case_id: str, user: CurrentUser = Depends(current_user)):
+    """Pairs of likely-duplicate persons on this case. Pure derivation —
+    nothing is persisted; nothing is mutated until the detective merges."""
+    case = Case.objects(id=case_id, tenant_id=user.tenant_id).first()
+    if not case:
+        raise HTTPException(404, "Case not found")
+
+    persons = list(Person.objects(tenant_id=user.tenant_id, case=case))
+    pairs: list[dict] = []
+    for i, a in enumerate(persons):
+        for b in persons[i + 1:]:
+            if a.role != b.role:
+                # Different role assignments — leave it to the detective to
+                # decide if a "suspect" and a "person_of_interest" with
+                # similar names are the same individual.
+                continue
+            if not _likely_duplicate(a.name, b.name):
+                continue
+            # Suggest the longer name as primary (more identifying info).
+            primary, dup = (a, b) if len(a.name) >= len(b.name) else (b, a)
+            pairs.append({
+                "primary": primary.to_dict(),
+                "duplicate": dup.to_dict(),
+            })
+    return {"pairs": pairs}
+
+
+class MergePersonsBody(BaseModel):
+    primary_id: str = Field(min_length=1, max_length=64)
+    duplicate_id: str = Field(min_length=1, max_length=64)
+
+
+@router.post("/cases/{case_id}/persons/merge")
+@require_perm("case.edit")
+def merge_persons(
+    case_id: str,
+    body: MergePersonsBody,
+    user: CurrentUser = Depends(current_user),
+):
+    """Merge `duplicate_id` into `primary_id`. The duplicate's descriptor
+    and notes are appended to the primary's notes field with a merge marker
+    so nothing is lost; the duplicate row is then deleted. Fires
+    PERSON_MERGED on the audit chain."""
+    if body.primary_id == body.duplicate_id:
+        raise HTTPException(422, "primary_id and duplicate_id must differ")
+
+    case = Case.objects(id=case_id, tenant_id=user.tenant_id).first()
+    if not case:
+        raise HTTPException(404, "Case not found")
+
+    primary = Person.objects(id=body.primary_id, tenant_id=user.tenant_id, case=case).first()
+    dup = Person.objects(id=body.duplicate_id, tenant_id=user.tenant_id, case=case).first()
+    if not primary or not dup:
+        raise HTTPException(404, "Person not found on this case")
+
+    merged_lines = [f"Merged from '{dup.name}' on {_datetime.utcnow().isoformat()}Z."]
+    if dup.descriptor:
+        merged_lines.append(f"Prior descriptor: {dup.descriptor}")
+    if dup.notes:
+        merged_lines.append(f"Prior notes:\n{dup.notes}")
+    appendage = "\n".join(merged_lines)
+    primary.notes = f"{primary.notes}\n\n{appendage}".strip() if primary.notes else appendage
+    primary.save()
+
+    dup_snapshot = dup.to_dict()
+    dup.delete()
+
+    case_audit.log_user_event(
+        user,
+        event_type=AuditEventType.PERSON_MERGED,
+        case_id=str(case.id),
+        summary=f"Merged person '{dup_snapshot['name']}' into '{primary.name}'",
+        detail={
+            "primary_id": str(primary.id),
+            "primary_name": primary.name,
+            "duplicate_snapshot": dup_snapshot,
+        },
+    )
+
+    return primary.to_dict()

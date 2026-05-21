@@ -526,6 +526,26 @@ export async function acceptInferredMention(
   return data;
 }
 
+export interface DuplicatePersonPair {
+  primary: Person;
+  duplicate: Person;
+}
+
+export async function getDuplicatePersons(caseId: string): Promise<{
+  pairs: DuplicatePersonPair[];
+}> {
+  const { data } = await http.get(`/cases/${caseId}/persons/duplicates`);
+  return data;
+}
+
+export async function mergePersons(
+  caseId: string,
+  body: { primary_id: string; duplicate_id: string },
+): Promise<Person> {
+  const { data } = await http.post(`/cases/${caseId}/persons/merge`, body);
+  return data;
+}
+
 export interface RelatedPerson {
   name: string;
   role: PersonRole;
