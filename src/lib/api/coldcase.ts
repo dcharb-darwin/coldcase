@@ -861,6 +861,7 @@ export interface Note {
   case_id: string;
   subject_kind: NoteSubjectKind;
   subject_id: string;
+  parent_note_id: string;
   body: string;
   created_by: string;
   created_at: string | null;
@@ -885,6 +886,7 @@ export async function createNote(caseId: string, body: {
   subject_kind: NoteSubjectKind;
   subject_id: string;
   body: string;
+  parent_note_id?: string;
 }): Promise<Note> {
   const { data } = await http.post<Note>(`/cases/${caseId}/notes`, body);
   return data;

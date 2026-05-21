@@ -28,6 +28,10 @@ class CreateNoteBody(BaseModel):
     subject_kind: NoteSubjectKind = NoteSubjectKind.CASE
     subject_id: str = Field(min_length=1)
     body: str = Field(min_length=1, max_length=20_000)
+    # Optional reply target. If set, the new note becomes a child of that
+    # note. Subject_kind + subject_id are validated against the parent so
+    # a thread can't drift across subjects.
+    parent_note_id: Optional[str] = None
 
 
 class UpdateNoteBody(BaseModel):
@@ -84,10 +88,21 @@ def create_note(
     if not case:
         raise HTTPException(404, "Case not found")
     _validate_subject(user, case, body.subject_kind.value, body.subject_id)
+
+    parent_id = (body.parent_note_id or "").strip()
+    if parent_id:
+        parent = Note.objects(id=parent_id, tenant_id=user.tenant_id, case=case).first()
+        if not parent:
+            raise HTTPException(404, "Parent note not found on this case")
+        # Replies inherit the parent's subject — keeps threads coherent.
+        if parent.subject_kind != body.subject_kind.value or parent.subject_id != body.subject_id:
+            raise HTTPException(422, "Reply subject must match parent note's subject")
+
     n = Note(
         tenant_id=user.tenant_id, case=case,
         subject_kind=body.subject_kind.value,
         subject_id=body.subject_id,
+        parent_note_id=parent_id,
         body=body.body.strip(),
         created_by=user.user_id, updated_by=user.user_id,
     ).save()

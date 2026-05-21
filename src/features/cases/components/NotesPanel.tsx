@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   createNote, deleteNote, listNotes, updateNote,
@@ -8,7 +8,8 @@ import {
 /**
  * Freeform detective notes. Sibling to tags (closed vocab) and timeline
  * entries (dated events) — this is for working memory: "call CBI Tuesday",
- * "DA wants §187 brief by Friday".
+ * "DA wants §187 brief by Friday". Supports threaded replies so a follow-up
+ * call lives under the original clue, not as a fresh top-level scratch.
  *
  * Scope-agnostic: pass `subjectKind` + `subjectId` to scope to a case,
  * document, or report. The same component drives all three surfaces.
@@ -35,8 +36,10 @@ export default function NotesPanel({
   const invalidate = () => qc.invalidateQueries({ queryKey });
 
   const createMut = useMutation({
-    mutationFn: () => createNote(caseId, {
-      subject_kind: subjectKind, subject_id: sid, body: draft.trim(),
+    mutationFn: (vars: { body: string; parent_note_id?: string }) => createNote(caseId, {
+      subject_kind: subjectKind, subject_id: sid,
+      body: vars.body.trim(),
+      parent_note_id: vars.parent_note_id,
     }),
     onSuccess: () => { setDraft(""); invalidate(); },
   });
@@ -45,8 +48,33 @@ export default function NotesPanel({
     onSuccess: invalidate,
   });
 
+  // Build the tree. Orphans (parent points to a deleted note) become
+  // top-level — defensive against deletion of a parent.
+  const tree = useMemo(() => {
+    const byId = new Map<string, Note>(notes.map((n) => [n.id, n]));
+    const childrenOf = new Map<string, Note[]>();
+    const roots: Note[] = [];
+    for (const n of notes) {
+      const parentId = n.parent_note_id || "";
+      if (parentId && byId.has(parentId)) {
+        const arr = childrenOf.get(parentId) ?? [];
+        arr.push(n);
+        childrenOf.set(parentId, arr);
+      } else {
+        roots.push(n);
+      }
+    }
+    // Children oldest-first inside a thread, roots newest-first so fresh
+    // discussion floats up.
+    for (const arr of childrenOf.values()) {
+      arr.sort((a, b) => (a.created_at ?? "").localeCompare(b.created_at ?? ""));
+    }
+    roots.sort((a, b) => (b.updated_at ?? "").localeCompare(a.updated_at ?? ""));
+    return { roots, childrenOf };
+  }, [notes]);
+
   return (
-    <section className={compact ? "" : ""}>
+    <section>
       <div className="flex items-baseline justify-between mb-2">
         <h3 className={compact
           ? "text-[12px] font-semibold text-slate-900"
@@ -74,10 +102,10 @@ export default function NotesPanel({
           <button
             type="button"
             disabled={createMut.isPending || !draft.trim()}
-            onClick={() => createMut.mutate()}
+            onClick={() => createMut.mutate({ body: draft })}
             className="px-3 py-1 text-xs rounded bg-blue-600 text-white disabled:opacity-50"
           >
-            {createMut.isPending ? "Saving…" : "Add note"}
+            {createMut.isPending && !createMut.variables?.parent_note_id ? "Saving…" : "Add note"}
           </button>
         </div>
       </div>
@@ -91,12 +119,18 @@ export default function NotesPanel({
         </div>
       ) : (
         <ul className="space-y-1.5">
-          {notes.map((n) => (
-            <NoteRow
+          {tree.roots.map((n) => (
+            <NoteTreeRow
               key={n.id}
               note={n}
-              onUpdate={(body) => updateNote(caseId, n.id, body).then(invalidate)}
-              onDelete={() => deleteMut.mutate(n.id)}
+              depth={0}
+              childrenOf={tree.childrenOf}
+              onUpdate={(id, body) => updateNote(caseId, id, body).then(invalidate)}
+              onDelete={(id) => deleteMut.mutate(id)}
+              onReply={(parentId, body) => createMut.mutate({ body, parent_note_id: parentId })}
+              isReplying={(parentId) =>
+                createMut.isPending && createMut.variables?.parent_note_id === parentId
+              }
             />
           ))}
         </ul>
@@ -105,15 +139,69 @@ export default function NotesPanel({
   );
 }
 
+
+function NoteTreeRow({
+  note, depth, childrenOf, onUpdate, onDelete, onReply, isReplying,
+}: {
+  note: Note;
+  depth: number;
+  childrenOf: Map<string, Note[]>;
+  onUpdate: (id: string, body: string) => void;
+  onDelete: (id: string) => void;
+  onReply: (parentId: string, body: string) => void;
+  isReplying: (parentId: string) => boolean;
+}) {
+  const kids = childrenOf.get(note.id) ?? [];
+
+  return (
+    <li>
+      <NoteRow
+        note={note}
+        depth={depth}
+        onUpdate={(body) => onUpdate(note.id, body)}
+        onDelete={() => onDelete(note.id)}
+        onReply={(body) => onReply(note.id, body)}
+        replyPending={isReplying(note.id)}
+      />
+      {kids.length > 0 ? (
+        <ul className="mt-1.5 space-y-1.5 border-l-2 border-slate-200 pl-3">
+          {kids.map((k) => (
+            <NoteTreeRow
+              key={k.id}
+              note={k}
+              depth={depth + 1}
+              childrenOf={childrenOf}
+              onUpdate={onUpdate}
+              onDelete={onDelete}
+              onReply={onReply}
+              isReplying={isReplying}
+            />
+          ))}
+        </ul>
+      ) : null}
+    </li>
+  );
+}
+
+
 function NoteRow({
-  note, onUpdate, onDelete,
-}: { note: Note; onUpdate: (body: string) => void; onDelete: () => void }) {
+  note, depth, onUpdate, onDelete, onReply, replyPending,
+}: {
+  note: Note;
+  depth: number;
+  onUpdate: (body: string) => void;
+  onDelete: () => void;
+  onReply: (body: string) => void;
+  replyPending: boolean;
+}) {
   const [editing, setEditing] = useState(false);
+  const [replying, setReplying] = useState(false);
   const [draft, setDraft] = useState(note.body);
+  const [replyDraft, setReplyDraft] = useState("");
   const updated = note.updated_at ? new Date(note.updated_at) : null;
   const justNow = updated && (Date.now() - updated.getTime()) < 60_000;
   return (
-    <li className="border border-slate-200 rounded p-2 bg-white group">
+    <div className={"border border-slate-200 rounded p-2 bg-white group " + (depth > 0 ? "bg-slate-50/40" : "")}>
       {editing ? (
         <>
           <textarea
@@ -154,6 +242,13 @@ function NoteRow({
           <div className="opacity-0 group-hover:opacity-100 flex gap-1 shrink-0 transition-opacity">
             <button
               type="button"
+              onClick={() => setReplying((v) => !v)}
+              className="px-1.5 py-0.5 text-[11px] text-slate-500 hover:text-blue-700"
+            >
+              reply
+            </button>
+            <button
+              type="button"
               onClick={() => setEditing(true)}
               className="px-1.5 py-0.5 text-[11px] text-slate-500 hover:text-slate-900"
             >
@@ -169,6 +264,40 @@ function NoteRow({
           </div>
         </div>
       )}
-    </li>
+
+      {replying ? (
+        <div className="mt-2 pt-2 border-t border-slate-100">
+          <textarea
+            value={replyDraft}
+            onChange={(e) => setReplyDraft(e.target.value)}
+            placeholder="Reply — follow-up call, contradicting evidence, next step…"
+            rows={2}
+            className="w-full border border-slate-300 rounded px-2 py-1 text-xs bg-white"
+            autoFocus
+          />
+          <div className="flex justify-end gap-2 mt-1">
+            <button
+              type="button"
+              onClick={() => { setReplying(false); setReplyDraft(""); }}
+              className="px-2 py-0.5 text-[11px] rounded border border-slate-300 hover:bg-slate-100"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={!replyDraft.trim() || replyPending}
+              onClick={() => {
+                onReply(replyDraft.trim());
+                setReplying(false);
+                setReplyDraft("");
+              }}
+              className="px-2 py-0.5 text-[11px] rounded bg-blue-600 text-white disabled:opacity-50"
+            >
+              {replyPending ? "Saving…" : "Reply"}
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </div>
   );
 }

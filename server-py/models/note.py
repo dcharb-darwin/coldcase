@@ -47,6 +47,12 @@ class Note(MEDocument):
     )
     subject_id = StringField(required=True)
 
+    # Threaded replies. A reply note carries the parent's id; top-level
+    # notes have parent_note_id="". Replies inherit the parent's
+    # subject_kind + subject_id (validated server-side) so a thread is
+    # always rooted in one subject (no cross-subject threads).
+    parent_note_id = StringField(default="")
+
     body = StringField(required=True)
 
     created_by = StringField(required=True)
@@ -60,6 +66,7 @@ class Note(MEDocument):
             "case_id": str(self.case.id) if self.case else None,
             "subject_kind": self.subject_kind,
             "subject_id": self.subject_id,
+            "parent_note_id": self.parent_note_id or "",
             "body": self.body,
             "created_by": self.created_by,
             "created_at": self.created_at.isoformat() if self.created_at else None,
