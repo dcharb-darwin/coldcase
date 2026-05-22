@@ -126,6 +126,7 @@ def create_app() -> FastAPI:
     from routers.graph import router as graph_router
     from seed.synthetic_case import router as demo_router
     from seed.civil_rights_cases import router as civil_rights_router
+    from seed.plausibility_demo import router as plausibility_demo_router
     application.include_router(cases_router, prefix=api_prefix)
     application.include_router(conversations_router, prefix=api_prefix)
     application.include_router(reports_router, prefix=api_prefix)
@@ -144,6 +145,7 @@ def create_app() -> FastAPI:
     application.include_router(graph_router, prefix=api_prefix)
     application.include_router(demo_router, prefix=api_prefix)
     application.include_router(civil_rights_router, prefix=api_prefix)
+    application.include_router(plausibility_demo_router, prefix=api_prefix)
 
     # Launchpad Admin router — /admin/{manifest,me,roles,assignments,mappings,assistant}
     # Mounted LAST so its routes don't get shadowed by domain routers.

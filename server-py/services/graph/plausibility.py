@@ -86,10 +86,15 @@ def _agency_score(a_ori: str, b_ori: str) -> tuple[float, Optional[str]]:
     if a == b:
         return 1.0, None
     # Different ORI prefixes generally mean different states (first 2
-    # chars of ORI = state abbreviation). Penalize cross-state more.
+    # chars of ORI = state abbreviation). A cross-state same-name match
+    # is a strong indicator of name coincidence — these are different
+    # jurisdictions with different officer pools and different witness
+    # populations. We weight this heavily; it's the single most reliable
+    # filter we have for the canonical false-positive case (1992 Indiana
+    # vs 1945 South Carolina, same surname).
     if a[:2].upper() != b[:2].upper():
-        return 0.3, f"different agency / state ({a} vs {b})"
-    return 0.6, f"different agency within state ({a} vs {b})"
+        return 0.15, f"different agency / state ({a} vs {b})"
+    return 0.55, f"different agency within state ({a} vs {b})"
 
 
 def _distinctiveness_score(name: str) -> tuple[float, Optional[str]]:
