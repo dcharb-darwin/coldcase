@@ -183,11 +183,22 @@ class CrossCaseWitnessHit:
     appearances: list[dict[str, Any]]
         # each: {case_id, case_number, case_title, role, person_node_id, confidence}
 
+    # Same-person plausibility — pairwise across appearances. The minimum
+    # across all pairs governs how confident we are that this is ONE
+    # individual rather than a name coincidence. Reasons are union of all
+    # pairwise reason lists; they explain WHY the system is uncertain so
+    # the UI can surface "47 years apart, different state" instead of
+    # silently dropping the hit.
+    plausibility_score: float = 1.0
+    implausibility_reasons: list[str] = field(default_factory=list)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "person_id": self.person_id,
             "person_name": self.person_name,
             "appearances": self.appearances,
+            "plausibility_score": self.plausibility_score,
+            "implausibility_reasons": self.implausibility_reasons,
         }
 
 

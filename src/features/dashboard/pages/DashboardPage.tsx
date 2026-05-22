@@ -485,14 +485,44 @@ function RoleConflictRow({ hit }: { hit: CrossCaseConflictHit }) {
     arr.push(a);
     byRole.set(a.role, arr);
   }
+  const plausibility = hit.plausibility_score;
+  const certain = plausibility >= 0.85;
+  const moderate = plausibility >= 0.5 && plausibility < 0.85;
+  const weak = plausibility < 0.5;
+  const scoreCls = certain
+    ? "bg-red-100 text-red-800 border-red-300"
+    : moderate
+      ? "bg-amber-100 text-amber-800 border-amber-300"
+      : "bg-slate-100 text-slate-600 border-slate-300";
+  const scoreLabel = certain
+    ? "Likely same person"
+    : moderate
+      ? "Possibly same person"
+      : "May be name coincidence";
+
   return (
     <li className="border border-amber-200 rounded p-2.5 bg-white">
       <div className="flex items-baseline gap-2 flex-wrap">
         <span className="text-sm font-semibold text-slate-900">{hit.person_name}</span>
+        <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full border text-[10px] ${scoreCls}`}
+              title={`Plausibility score ${(plausibility * 100).toFixed(0)}%`}>
+          {scoreLabel}
+        </span>
         <span className="text-[11px] text-slate-500">
           {byRole.size} distinct roles across {hit.appearances.length} cases
         </span>
       </div>
+      {hit.implausibility_reasons.length > 0 ? (
+        <div className="text-[11px] text-slate-600 italic mt-1 pl-2 border-l-2 border-amber-200">
+          {hit.implausibility_reasons.join(" · ")}
+        </div>
+      ) : null}
+      {weak ? (
+        <div className="text-[10px] text-slate-500 mt-1">
+          Below the cluster threshold — shown so you can confirm or dismiss; treat
+          with skepticism.
+        </div>
+      ) : null}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-1.5 mt-2">
         {[...byRole.entries()].map(([role, apps]) => {
           const danger = role === "suspect" || role === "person_of_interest";

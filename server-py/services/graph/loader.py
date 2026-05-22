@@ -25,6 +25,7 @@ from services.graph.types import (
     EdgeKind, EdgeProvenanceSource, EdgeStatus,
     GraphEdge, GraphNode, NodeKind, node_id,
 )
+from services.graph.plausibility import same_person_plausibility
 
 
 _HONORIFIC_RE = re.compile(r"\b(dr|mr|mrs|ms|mx|prof|rev|sgt|det|capt|lt|hon)\.?\s+")
@@ -57,6 +58,12 @@ def load_cases(tenant_id: str) -> tuple[list[GraphNode], list[GraphEdge]]:
                 "classification": c.classification,
                 "status": c.status,
                 "primary_investigator_id": c.primary_investigator_id,
+                # Needed by the plausibility scorer for SAME_NAME_AS edges
+                # and the cross-case role-conflict query.
+                "date_of_incident": (
+                    c.date_of_incident.isoformat() if c.date_of_incident else None
+                ),
+                "agency_ori_snapshot": c.agency_ori_snapshot or "",
             },
         ))
     return nodes, edges
@@ -68,8 +75,13 @@ def load_persons(tenant_id: str) -> tuple[list[GraphNode], list[GraphEdge]]:
     Confidence rules:
       - APPEARS_ON_CASE: officer-confirmed if provenance=manual, accepted
         if AI-derived
-      - SAME_NAME_AS: WEAK between persons sharing a normalized name on
-        different cases
+      - SAME_NAME_AS: WEAK base, multiplied by `same_person_plausibility`
+        from the temporal gap, agency ORI match, and name distinctiveness.
+        A 47-year gap between cases in different states drops confidence
+        toward zero; reasons are stored on the edge so the UI can explain
+        why the system is uncertain. We DO NOT suppress the edge entirely
+        — a detective working a cross-decade cold case might still want
+        to inspect it.
       - CO_OCCURS_WITH: officer-confirmed (structural — they're both on
         the same case file)
     """
@@ -77,6 +89,17 @@ def load_persons(tenant_id: str) -> tuple[list[GraphNode], list[GraphEdge]]:
     edges: list[GraphEdge] = []
     persons_by_case: dict[str, list[Person]] = defaultdict(list)
     persons_by_norm_name: dict[str, list[Person]] = defaultdict(list)
+
+    # Cache per-case metadata used by the plausibility scorer so we don't
+    # touch the DB inside the inner SAME_NAME_AS loop.
+    case_meta: dict[str, dict] = {}
+    for c in Case.objects(tenant_id=tenant_id).only(
+        "id", "date_of_incident", "agency_ori_snapshot",
+    ):
+        case_meta[str(c.id)] = {
+            "date_of_incident": c.date_of_incident,
+            "agency_ori_snapshot": c.agency_ori_snapshot or "",
+        }
 
     for p in Person.objects(tenant_id=tenant_id):
         case_raw = str(p.case.id) if p.case else ""
@@ -133,7 +156,9 @@ def load_persons(tenant_id: str) -> tuple[list[GraphNode], list[GraphEdge]]:
                 ))
 
     # SAME_NAME_AS: persons sharing a normalized name on different cases.
-    # WEAK confidence — same surface form, no descriptor reconciliation.
+    # Confidence = WEAK base × plausibility (temporal gap × agency match ×
+    # name distinctiveness). Reasons attached so the UI can explain
+    # uncertainty visibly.
     for norm, ps in persons_by_norm_name.items():
         if len(ps) < 2:
             continue
@@ -143,13 +168,30 @@ def load_persons(tenant_id: str) -> tuple[list[GraphNode], list[GraphEdge]]:
                 b_case = str(b.case.id) if b.case else ""
                 if a_case == b_case:
                     continue
+                a_meta = case_meta.get(a_case, {})
+                b_meta = case_meta.get(b_case, {})
+                pr = same_person_plausibility(
+                    name=a.name,
+                    case_a_date=a_meta.get("date_of_incident"),
+                    case_b_date=b_meta.get("date_of_incident"),
+                    case_a_ori=a_meta.get("agency_ori_snapshot", ""),
+                    case_b_ori=b_meta.get("agency_ori_snapshot", ""),
+                )
+                # WEAK base × plausibility — at perfect plausibility (1.0)
+                # this stays WEAK = 0.30, matching the prior behavior. At
+                # zero plausibility it collapses to nearly 0.
+                confidence = round(CONFIDENCE_WEAK * pr.score, 3)
                 edges.append(GraphEdge(
                     kind=EdgeKind.SAME_NAME_AS,
                     source=node_id(NodeKind.PERSON, str(a.id)),
                     target=node_id(NodeKind.PERSON, str(b.id)),
-                    confidence=CONFIDENCE_WEAK,
+                    confidence=confidence,
                     provenance=EdgeProvenanceSource.DERIVED_SUBSTRING,
-                    attrs={"normalized_name": norm},
+                    attrs={
+                        "normalized_name": norm,
+                        "plausibility_score": pr.score,
+                        "implausibility_reasons": pr.reasons,
+                    },
                 ))
     return nodes, edges
 

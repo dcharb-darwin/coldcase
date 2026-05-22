@@ -514,6 +514,11 @@ export interface CrossCaseConflictHit {
   person_id: string;
   person_name: string;
   appearances: CrossCaseConflictAppearance[];
+  // Same-person plausibility — see graph-layer.md / plausibility.py.
+  // 1.0 = highly likely same person, near-0 = almost certainly name
+  // coincidence. Reasons list explains WHY confidence is below 1.0.
+  plausibility_score: number;
+  implausibility_reasons: string[];
 }
 
 export async function getCrossCaseConflicts(opts?: {

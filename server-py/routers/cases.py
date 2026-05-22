@@ -55,6 +55,9 @@ class UpdateCaseBody(BaseModel):
     co_investigator_ids: Optional[list[str]] = None
     status: Optional[CaseStatus] = None
     date_of_incident: Optional[date] = None
+    # Agency ORI — feeds plausibility scoring on same-name matches
+    # across cases. 9-char code, first 2 are the state abbreviation.
+    agency_ori_snapshot: Optional[str] = Field(default=None, max_length=20)
 
 
 class RegisterDocumentBody(BaseModel):
@@ -404,6 +407,8 @@ def update_case(case_id: str, body: UpdateCaseBody, user: CurrentUser = Depends(
         case.co_investigator_ids = body.co_investigator_ids
     if body.date_of_incident is not None:
         case.date_of_incident = body.date_of_incident
+    if body.agency_ori_snapshot is not None:
+        case.agency_ori_snapshot = body.agency_ori_snapshot.strip()
     if body.status is not None:
         changes["status"] = (case.status, body.status.value)
         case.status = body.status.value

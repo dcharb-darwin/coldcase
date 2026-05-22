@@ -27,6 +27,7 @@ import networkx as nx
 from services.graph.loader import (
     _normalize_name, load_tenant_graph,
 )
+from services.graph.plausibility import same_person_plausibility
 from services.graph.types import (
     CrossCaseWitnessHit,
     EdgeKind, EdgeProvenanceSource, EdgeStatus,
@@ -341,6 +342,7 @@ class NetworkXGraphBackend:
         self, tenant_id: str, *,
         min_confidence: float = 0.4,
         primary_investigator_id: str | None = None,
+        min_plausibility: float = 0.25,
     ) -> list[CrossCaseWitnessHit]:
         entry = self._get(tenant_id)
         # Bucket persons by normalized name → list of (case_id, role, ...).
@@ -375,36 +377,138 @@ class NetworkXGraphBackend:
             roles = {a["role"] for a in appearances}
             if len(case_ids) < 2 or len(roles) < 2:
                 continue
-            # Filter low-confidence appearances out.
+            # Filter low-confidence appearances (APPEARS_ON_CASE).
             kept = [a for a in appearances if a["confidence"] >= min_confidence]
             if len({a["case_id"] for a in kept}) < 2:
                 continue
             if len({a["role"] for a in kept}) < 2:
                 continue
-            # Compose the hit, attach case display info from node attrs.
-            full_apps: list[dict] = []
-            for a in kept:
-                case_node = entry.nodes_by_id.get(node_id(NodeKind.CASE, a["case_id"]))
-                attrs = (case_node.attrs or {}) if case_node else {}
-                full_apps.append({
-                    **a,
-                    "case_number": attrs.get("case_number", ""),
-                    "case_title": attrs.get("title", ""),
-                    "case_classification": attrs.get("classification", ""),
-                })
-            # Canonical display = longest name across appearances.
-            canonical = max(kept, key=lambda a: len(a.get("name", "")))
-            hits.append(CrossCaseWitnessHit(
-                person_id=canonical["person_node_id"],
-                person_name=canonical["name"],
-                appearances=full_apps,
-            ))
-        # Sort by # of distinct roles desc, then case count desc.
+
+            # Cluster appearances by pairwise plausibility so coincidental
+            # name matches (e.g. 1945 case vs 1992 case, different state)
+            # don't poison the hit. Same name spanning decades in one
+            # state is one cluster; the unrelated 1945 case forms its
+            # own cluster and only surfaces if IT alone has ≥2 cases +
+            # roles (it won't with just one appearance).
+            canonical_name = max(kept, key=lambda a: len(a.get("name", "")))["name"]
+            distinct_cases = list({a["case_id"]: a for a in kept}.values())
+            # Build pair → plausibility map.
+            pair_score: dict[tuple[int, int], float] = {}
+            pair_reasons: dict[tuple[int, int], list[str]] = {}
+            for i, ap_a in enumerate(distinct_cases):
+                a_attrs = (
+                    (entry.nodes_by_id.get(node_id(NodeKind.CASE, ap_a["case_id"]))
+                     or _empty_node()).attrs or {}
+                )
+                for j in range(i + 1, len(distinct_cases)):
+                    ap_b = distinct_cases[j]
+                    b_attrs = (
+                        (entry.nodes_by_id.get(node_id(NodeKind.CASE, ap_b["case_id"]))
+                         or _empty_node()).attrs or {}
+                    )
+                    pr = same_person_plausibility(
+                        name=canonical_name,
+                        case_a_date=_parse_date(a_attrs.get("date_of_incident")),
+                        case_b_date=_parse_date(b_attrs.get("date_of_incident")),
+                        case_a_ori=a_attrs.get("agency_ori_snapshot", ""),
+                        case_b_ori=b_attrs.get("agency_ori_snapshot", ""),
+                    )
+                    pair_score[(i, j)] = pr.score
+                    pair_reasons[(i, j)] = pr.reasons
+
+            # Union-find over appearance indices: connect any pair whose
+            # plausibility passes the threshold. Resulting components are
+            # the candidate hits.
+            n = len(distinct_cases)
+            parent = list(range(n))
+
+            def _find(x: int) -> int:
+                while parent[x] != x:
+                    parent[x] = parent[parent[x]]
+                    x = parent[x]
+                return x
+
+            for (i, j), score in pair_score.items():
+                if score >= min_plausibility:
+                    ri, rj = _find(i), _find(j)
+                    if ri != rj:
+                        parent[ri] = rj
+
+            comps: dict[int, list[int]] = defaultdict(list)
+            for idx in range(n):
+                comps[_find(idx)].append(idx)
+
+            for comp_indices in comps.values():
+                comp_apps = [distinct_cases[idx] for idx in comp_indices]
+                comp_case_ids = {a["case_id"] for a in comp_apps}
+                comp_roles = {a["role"] for a in comp_apps}
+                if len(comp_case_ids) < 2 or len(comp_roles) < 2:
+                    continue
+                # Min plausibility + union of reasons WITHIN this component.
+                min_score = 1.0
+                seen_reasons: set[str] = set()
+                reason_set: list[str] = []
+                for i_a in range(len(comp_indices)):
+                    for j_a in range(i_a + 1, len(comp_indices)):
+                        key = (
+                            min(comp_indices[i_a], comp_indices[j_a]),
+                            max(comp_indices[i_a], comp_indices[j_a]),
+                        )
+                        s = pair_score.get(key, 1.0)
+                        if s < min_score:
+                            min_score = s
+                        for r in pair_reasons.get(key, []):
+                            if r not in seen_reasons:
+                                seen_reasons.add(r)
+                                reason_set.append(r)
+
+                full_apps: list[dict] = []
+                for a in comp_apps:
+                    case_node = entry.nodes_by_id.get(node_id(NodeKind.CASE, a["case_id"]))
+                    attrs = (case_node.attrs or {}) if case_node else {}
+                    full_apps.append({
+                        **a,
+                        "case_number": attrs.get("case_number", ""),
+                        "case_title": attrs.get("title", ""),
+                        "case_classification": attrs.get("classification", ""),
+                    })
+                canonical = max(comp_apps, key=lambda a: len(a.get("name", "")))
+                hits.append(CrossCaseWitnessHit(
+                    person_id=canonical["person_node_id"],
+                    person_name=canonical["name"],
+                    appearances=full_apps,
+                    plausibility_score=round(min_score, 3),
+                    implausibility_reasons=reason_set,
+                ))
+        # Sort by plausibility DESC first (most-likely-real-conflicts up
+        # top), then by # of distinct roles, then by case count.
         hits.sort(key=lambda h: (
+            -h.plausibility_score,
             -len({a["role"] for a in h.appearances}),
             -len({a["case_id"] for a in h.appearances}),
         ))
         return hits
+
+
+def _empty_node() -> GraphNode:
+    """Sentinel for missing case nodes — keeps the inner loop tidy."""
+    return GraphNode(id="", kind=NodeKind.CASE, label="", attrs={})
+
+
+def _parse_date(s: str | None):
+    """Round-trip ISO date strings back to datetime.date for the scorer.
+    The graph nodes store ISO strings (JSON-friendly); the scorer takes
+    date objects."""
+    if not s:
+        return None
+    from datetime import date as _date
+    try:
+        # Handles both 'YYYY-MM-DD' and full ISO datetime.
+        if "T" in s:
+            return _date.fromisoformat(s.split("T", 1)[0])
+        return _date.fromisoformat(s)
+    except ValueError:
+        return None
 
 
 def _person_appears_confidence(
