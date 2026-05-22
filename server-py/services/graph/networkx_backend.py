@@ -416,9 +416,27 @@ class NetworkXGraphBackend:
                     pair_score[(i, j)] = pr.score
                     pair_reasons[(i, j)] = pr.reasons
 
+            # Pull officer verdicts (CONFIRMED_SAME / CONFIRMED_DIFFERENT)
+            # so we can override the heuristic for any pair the detective
+            # already adjudicated.
+            confirmed_same: set[frozenset[str]] = set()
+            confirmed_different: set[frozenset[str]] = set()
+            person_ids = [a["person_node_id"] for a in distinct_cases]
+            person_id_set = set(person_ids)
+            for s_, t_, data in entry.graph.edges(data=True):
+                e: GraphEdge = data["edge"]
+                if e.source not in person_id_set or e.target not in person_id_set:
+                    continue
+                pair = frozenset({e.source, e.target})
+                if e.kind == EdgeKind.CONFIRMED_SAME_PERSON_AS:
+                    confirmed_same.add(pair)
+                elif e.kind == EdgeKind.CONFIRMED_DIFFERENT_PERSON_AS:
+                    confirmed_different.add(pair)
+
             # Union-find over appearance indices: connect any pair whose
-            # plausibility passes the threshold. Resulting components are
-            # the candidate hits.
+            # plausibility passes the threshold, force-connect officer-
+            # confirmed-same pairs, and refuse to connect officer-confirmed-
+            # different pairs (even if heuristic says they're the same).
             n = len(distinct_cases)
             parent = list(range(n))
 
@@ -429,7 +447,12 @@ class NetworkXGraphBackend:
                 return x
 
             for (i, j), score in pair_score.items():
-                if score >= min_plausibility:
+                pair = frozenset({distinct_cases[i]["person_node_id"],
+                                  distinct_cases[j]["person_node_id"]})
+                if pair in confirmed_different:
+                    continue  # explicit "not the same person" — never connect
+                connect = (pair in confirmed_same) or (score >= min_plausibility)
+                if connect:
                     ri, rj = _find(i), _find(j)
                     if ri != rj:
                         parent[ri] = rj
@@ -473,12 +496,28 @@ class NetworkXGraphBackend:
                         "case_classification": attrs.get("classification", ""),
                     })
                 canonical = max(comp_apps, key=lambda a: len(a.get("name", "")))
+                # Does any pair in this component carry an officer
+                # CONFIRMED_SAME assertion? If so the UI shows it as
+                # officer-validated rather than heuristic.
+                contains_confirmed = False
+                comp_pids = {a["person_node_id"] for a in comp_apps}
+                for i_a in range(len(comp_apps)):
+                    for j_a in range(i_a + 1, len(comp_apps)):
+                        pair = frozenset({comp_apps[i_a]["person_node_id"],
+                                          comp_apps[j_a]["person_node_id"]})
+                        if pair in confirmed_same:
+                            contains_confirmed = True
+                            break
+                    if contains_confirmed:
+                        break
+                _ = comp_pids  # unused locally but documents intent
                 hits.append(CrossCaseWitnessHit(
                     person_id=canonical["person_node_id"],
                     person_name=canonical["name"],
                     appearances=full_apps,
                     plausibility_score=round(min_score, 3),
                     implausibility_reasons=reason_set,
+                    contains_confirmed_same=contains_confirmed,
                 ))
         # Sort by plausibility DESC first (most-likely-real-conflicts up
         # top), then by # of distinct roles, then by case count.

@@ -64,6 +64,7 @@ class AuditEventType(str, Enum):
     HYPOTHESIS_STATUS_CHANGED = "hypothesis.status_changed"
     HYPOTHESIS_GENERATED_DE_NOVO = "hypothesis.generated_de_novo"
     HYPOTHESIS_RED_TEAMED = "hypothesis.red_teamed"
+    PERSON_IDENTITY_ASSERTED = "person.identity_asserted"
 
 
 class AuditEvent(MEDocument):

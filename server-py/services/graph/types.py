@@ -29,6 +29,12 @@ class EdgeKind(str, Enum):
     MERGED_INTO = "merged_into"             # Person → Person (duplicate merge target)
     SAME_NAME_AS = "same_name_as"           # Person ↔ Person (loose name match)
     CO_OCCURS_WITH = "co_occurs_with"       # Person ↔ Person (share a case)
+    CONFIRMED_SAME_PERSON_AS = "confirmed_same_person_as"
+        # Person ↔ Person — officer asserted these are the same individual.
+        # Overrides heuristic plausibility scoring.
+    CONFIRMED_DIFFERENT_PERSON_AS = "confirmed_different_person_as"
+        # Person ↔ Person — officer asserted these are DIFFERENT individuals.
+        # Suppresses clustering and conflict surfacing.
 
     # Document edges
     BELONGS_TO_CASE = "belongs_to_case"     # Document → Case
@@ -191,6 +197,10 @@ class CrossCaseWitnessHit:
     # silently dropping the hit.
     plausibility_score: float = 1.0
     implausibility_reasons: list[str] = field(default_factory=list)
+    # True when at least one pair in this hit was force-connected by an
+    # officer's CONFIRMED_SAME_PERSON_AS assertion. UI uses this to
+    # render "officer-confirmed" instead of "heuristic match".
+    contains_confirmed_same: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -199,6 +209,7 @@ class CrossCaseWitnessHit:
             "appearances": self.appearances,
             "plausibility_score": self.plausibility_score,
             "implausibility_reasons": self.implausibility_reasons,
+            "contains_confirmed_same": self.contains_confirmed_same,
         }
 
 

@@ -20,6 +20,9 @@ from models.hypothesis import (
     Hypothesis, HypothesisStatus, HypothesisOrigin,
     HypothesisFinding, HypothesisFindingKind,
 )
+from models.person_identity import (
+    PersonIdentityAssertion, IdentityVerdict, normalize_pair,
+)
 
 __all__ = [
     "Case", "CaseStatus", "CaseClassification", "RetentionPolicy",
@@ -38,4 +41,5 @@ __all__ = [
     "BrainDump", "BrainDumpSource",
     "Hypothesis", "HypothesisStatus", "HypothesisOrigin",
     "HypothesisFinding", "HypothesisFindingKind",
+    "PersonIdentityAssertion", "IdentityVerdict", "normalize_pair",
 ]

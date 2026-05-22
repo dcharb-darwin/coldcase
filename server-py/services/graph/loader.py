@@ -18,6 +18,7 @@ from models import (
     TimelineEntry, Tag,
 )
 from models.hypothesis import Hypothesis
+from models.person_identity import IdentityVerdict, PersonIdentityAssertion
 
 from services.graph.types import (
     CONFIDENCE_OFFICER_ACCEPTED, CONFIDENCE_OFFICER_CONFIRMED,
@@ -344,6 +345,31 @@ def load_tags_and_similar(tenant_id: str) -> tuple[list[GraphNode], list[GraphEd
     return nodes, edges
 
 
+def load_identity_assertions(tenant_id: str) -> tuple[list[GraphNode], list[GraphEdge]]:
+    """Emit CONFIRMED_SAME_PERSON_AS / CONFIRMED_DIFFERENT_PERSON_AS edges
+    from officer assertions. Confidence 1.0 because these are first-hand
+    detective verdicts — they override the heuristic scorer."""
+    nodes: list[GraphNode] = []
+    edges: list[GraphEdge] = []
+    for assertion in PersonIdentityAssertion.objects(tenant_id=tenant_id):
+        kind = (
+            EdgeKind.CONFIRMED_SAME_PERSON_AS
+            if assertion.verdict == IdentityVerdict.SAME.value
+            else EdgeKind.CONFIRMED_DIFFERENT_PERSON_AS
+        )
+        edges.append(GraphEdge(
+            kind=kind,
+            source=node_id(NodeKind.PERSON, assertion.person_a_id),
+            target=node_id(NodeKind.PERSON, assertion.person_b_id),
+            confidence=1.0,
+            provenance=EdgeProvenanceSource.HUMAN_OFFICER,
+            asserted_by=assertion.asserted_by,
+            asserted_at=assertion.asserted_at,
+            attrs={"rationale": assertion.rationale, "assertion_id": str(assertion.id)},
+        ))
+    return nodes, edges
+
+
 def load_timeline(tenant_id: str) -> tuple[list[GraphNode], list[GraphEdge]]:
     nodes: list[GraphNode] = []
     edges: list[GraphEdge] = []
@@ -375,7 +401,8 @@ def load_tenant_graph(tenant_id: str) -> tuple[list[GraphNode], list[GraphEdge]]
     nodes: list[GraphNode] = []
     edges: list[GraphEdge] = []
     for loader in (load_cases, load_persons, load_documents, load_hypotheses,
-                   load_tags_and_similar, load_timeline):
+                   load_tags_and_similar, load_timeline,
+                   load_identity_assertions):
         n, e = loader(tenant_id)
         nodes.extend(n)
         edges.extend(e)

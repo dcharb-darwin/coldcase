@@ -519,6 +519,52 @@ export interface CrossCaseConflictHit {
   // coincidence. Reasons list explains WHY confidence is below 1.0.
   plausibility_score: number;
   implausibility_reasons: string[];
+  // True when an officer has confirmed at least one pair in this hit
+  // as the same person — UI shows "officer-confirmed" instead of
+  // "heuristic match".
+  contains_confirmed_same: boolean;
+}
+
+// ── Person identity assertions ─────────────────────────────────────────
+
+export type IdentityVerdict = "same" | "different";
+
+export interface PersonIdentityAssertion {
+  id: string;
+  person_a_id: string;
+  person_b_id: string;
+  verdict: IdentityVerdict;
+  rationale: string;
+  asserted_by: string;
+  asserted_at: string | null;
+  updated_at: string | null;
+}
+
+export async function assertPersonIdentity(body: {
+  person_a_id: string;
+  person_b_id: string;
+  verdict: IdentityVerdict;
+  rationale?: string;
+}): Promise<PersonIdentityAssertion> {
+  const { data } = await http.post("/persons/identity-assertions", body);
+  return data;
+}
+
+export async function getPersonIdentityAssertion(
+  person_a_id: string, person_b_id: string,
+): Promise<{ assertion: PersonIdentityAssertion | null }> {
+  const { data } = await http.get("/persons/identity-assertions", {
+    params: { person_a_id, person_b_id },
+  });
+  return data;
+}
+
+export async function revokePersonIdentityAssertion(
+  person_a_id: string, person_b_id: string,
+): Promise<void> {
+  await http.delete("/persons/identity-assertions", {
+    params: { person_a_id, person_b_id },
+  });
 }
 
 export async function getCrossCaseConflicts(opts?: {

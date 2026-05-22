@@ -124,6 +124,7 @@ def create_app() -> FastAPI:
     from routers.dashboard import router as dashboard_router
     from routers.hypotheses import router as hypotheses_router
     from routers.graph import router as graph_router
+    from routers.person_identity import router as person_identity_router
     from seed.synthetic_case import router as demo_router
     from seed.civil_rights_cases import router as civil_rights_router
     from seed.plausibility_demo import router as plausibility_demo_router
@@ -143,6 +144,7 @@ def create_app() -> FastAPI:
     application.include_router(dashboard_router, prefix=api_prefix)
     application.include_router(hypotheses_router, prefix=api_prefix)
     application.include_router(graph_router, prefix=api_prefix)
+    application.include_router(person_identity_router, prefix=api_prefix)
     application.include_router(demo_router, prefix=api_prefix)
     application.include_router(civil_rights_router, prefix=api_prefix)
     application.include_router(plausibility_demo_router, prefix=api_prefix)

@@ -1,10 +1,10 @@
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  getCrossCaseConflicts, getDashboardInsights,
+  assertPersonIdentity, getCrossCaseConflicts, getDashboardInsights,
   listAuditEvents, listCases, listTags,
   type AuditEvent, type Case, type CrossCaseConflictHit,
-  type RecurringPerson, type SimilarCasePair,
+  type IdentityVerdict, type RecurringPerson, type SimilarCasePair,
 } from "@/lib/api/coldcase";
 import { ROUTES, setHashPath } from "@/shell/routes";
 
@@ -478,6 +478,7 @@ function CrossCaseRoleConflicts() {
 }
 
 function RoleConflictRow({ hit }: { hit: CrossCaseConflictHit }) {
+  const qc = useQueryClient();
   // Pre-bucket appearances by role for a compact visual.
   const byRole = new Map<string, CrossCaseConflictHit["appearances"]>();
   for (const a of hit.appearances) {
@@ -489,28 +490,91 @@ function RoleConflictRow({ hit }: { hit: CrossCaseConflictHit }) {
   const certain = plausibility >= 0.85;
   const moderate = plausibility >= 0.5 && plausibility < 0.85;
   const weak = plausibility < 0.5;
-  const scoreCls = certain
-    ? "bg-red-100 text-red-800 border-red-300"
-    : moderate
-      ? "bg-amber-100 text-amber-800 border-amber-300"
-      : "bg-slate-100 text-slate-600 border-slate-300";
-  const scoreLabel = certain
-    ? "Likely same person"
-    : moderate
-      ? "Possibly same person"
-      : "May be name coincidence";
+  const scoreCls = hit.contains_confirmed_same
+    ? "bg-emerald-100 text-emerald-800 border-emerald-300"
+    : certain
+      ? "bg-red-100 text-red-800 border-red-300"
+      : moderate
+        ? "bg-amber-100 text-amber-800 border-amber-300"
+        : "bg-slate-100 text-slate-600 border-slate-300";
+  const scoreLabel = hit.contains_confirmed_same
+    ? "Officer-confirmed same"
+    : certain
+      ? "Likely same person"
+      : moderate
+        ? "Possibly same person"
+        : "May be name coincidence";
+
+  // Adjudication mutation — assert a verdict across every pair of
+  // appearances in this hit. That fully cements the cluster (verdict
+  // "same") or fully breaks it (verdict "different").
+  const assertMut = useMutation({
+    mutationFn: async (verdict: IdentityVerdict) => {
+      const ids = hit.appearances.map((a) => a.person_node_id.replace(/^person:/, ""));
+      // Iterate all unordered pairs and assert the same verdict on each.
+      for (let i = 0; i < ids.length; i++) {
+        for (let j = i + 1; j < ids.length; j++) {
+          await assertPersonIdentity({
+            person_a_id: ids[i]!, person_b_id: ids[j]!,
+            verdict,
+            rationale: verdict === "same"
+              ? `Detective confirmed: same person across ${ids.length} cases`
+              : `Detective: name coincidence, distinct individuals`,
+          });
+        }
+      }
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["dashboard", "cross-case-conflicts"] });
+    },
+  });
+  const [busy, setBusy] = useState<IdentityVerdict | null>(null);
+  const onAssert = async (v: IdentityVerdict) => {
+    setBusy(v);
+    try {
+      await assertMut.mutateAsync(v);
+    } finally {
+      setBusy(null);
+    }
+  };
 
   return (
     <li className="border border-amber-200 rounded p-2.5 bg-white">
       <div className="flex items-baseline gap-2 flex-wrap">
         <span className="text-sm font-semibold text-slate-900">{hit.person_name}</span>
         <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full border text-[10px] ${scoreCls}`}
-              title={`Plausibility score ${(plausibility * 100).toFixed(0)}%`}>
+              title={
+                hit.contains_confirmed_same
+                  ? "An officer has explicitly confirmed at least one pair as the same person"
+                  : `Plausibility score ${(plausibility * 100).toFixed(0)}%`
+              }>
           {scoreLabel}
         </span>
         <span className="text-[11px] text-slate-500">
           {byRole.size} distinct roles across {hit.appearances.length} cases
         </span>
+        {/* Adjudication buttons — always visible. Same/different is an
+            officer judgment that supersedes the heuristic. */}
+        <div className="ml-auto flex gap-1.5 shrink-0">
+          <button
+            type="button"
+            disabled={busy !== null}
+            onClick={() => onAssert("same")}
+            className="px-2 py-0.5 text-[11px] rounded border border-emerald-300 bg-white text-emerald-800 hover:bg-emerald-50 disabled:opacity-50"
+            title="Confirm these are the same person — locks the cluster"
+          >
+            {busy === "same" ? "Saving…" : "Confirm same"}
+          </button>
+          <button
+            type="button"
+            disabled={busy !== null}
+            onClick={() => onAssert("different")}
+            className="px-2 py-0.5 text-[11px] rounded border border-slate-300 bg-white text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+            title="Mark as different people — dismisses this conflict permanently"
+          >
+            {busy === "different" ? "Saving…" : "Mark different"}
+          </button>
+        </div>
       </div>
       {hit.implausibility_reasons.length > 0 ? (
         <div className="text-[11px] text-slate-600 italic mt-1 pl-2 border-l-2 border-amber-200">
