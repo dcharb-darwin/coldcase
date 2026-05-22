@@ -1,8 +1,10 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
-  getDashboardInsights, listAuditEvents, listCases, listTags,
-  type AuditEvent, type Case, type RecurringPerson, type SimilarCasePair,
+  getCrossCaseConflicts, getDashboardInsights,
+  listAuditEvents, listCases, listTags,
+  type AuditEvent, type Case, type CrossCaseConflictHit,
+  type RecurringPerson, type SimilarCasePair,
 } from "@/lib/api/coldcase";
 import { ROUTES, setHashPath } from "@/shell/routes";
 
@@ -59,6 +61,7 @@ export default function DashboardPage() {
       </div>
 
       <CrossCaseInsights />
+      <CrossCaseRoleConflicts />
 
       <MyCases cases={myCases} loading={casesLoading} />
     </div>
@@ -423,6 +426,107 @@ function SimilarPairRow({ row }: { row: SimilarCasePair }) {
     </li>
   );
 }
+
+function CrossCaseRoleConflicts() {
+  // Surfaces query 5 of the graph layer — persons who appear on multiple
+  // cases under DIFFERENT roles. This is a Brady/credibility risk: a
+  // witness on case A who's a suspect on case B might be impeachable.
+  // Backend already scopes to the caller's caseload via mine=true.
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["dashboard", "cross-case-conflicts"],
+    queryFn: () => getCrossCaseConflicts({ mine: true }),
+    staleTime: 60_000,
+  });
+
+  if (isLoading) {
+    return (
+      <Card title="Cross-case role conflicts" tone="warning">
+        <div className="text-xs text-slate-500">Computing…</div>
+      </Card>
+    );
+  }
+  if (error) {
+    return (
+      <Card title="Cross-case role conflicts" tone="warning">
+        <div className="text-xs text-red-700">{(error as Error).message}</div>
+      </Card>
+    );
+  }
+  const hits = data?.hits ?? [];
+
+  return (
+    <Card title={`Cross-case role conflicts${hits.length > 0 ? ` (${hits.length})` : ""}`} tone={hits.length > 0 ? "warning" : undefined}>
+      <p className="text-xs text-slate-600 mb-2">
+        People who appear on multiple of your cases under{" "}
+        <strong>different roles</strong> — a witness on one case may be a
+        suspect on another. Brady/credibility risk worth a second look before
+        the case goes to the DA.
+      </p>
+      {hits.length === 0 ? (
+        <p className="text-xs text-slate-500 italic">
+          No role conflicts found on your caseload. People who appear on
+          multiple cases under the <em>same</em> role show up in "Cross-case
+          insights" above.
+        </p>
+      ) : (
+        <ul className="space-y-2">
+          {hits.map((h) => <RoleConflictRow key={h.person_id} hit={h} />)}
+        </ul>
+      )}
+    </Card>
+  );
+}
+
+function RoleConflictRow({ hit }: { hit: CrossCaseConflictHit }) {
+  // Pre-bucket appearances by role for a compact visual.
+  const byRole = new Map<string, CrossCaseConflictHit["appearances"]>();
+  for (const a of hit.appearances) {
+    const arr = byRole.get(a.role) ?? [];
+    arr.push(a);
+    byRole.set(a.role, arr);
+  }
+  return (
+    <li className="border border-amber-200 rounded p-2.5 bg-white">
+      <div className="flex items-baseline gap-2 flex-wrap">
+        <span className="text-sm font-semibold text-slate-900">{hit.person_name}</span>
+        <span className="text-[11px] text-slate-500">
+          {byRole.size} distinct roles across {hit.appearances.length} cases
+        </span>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-1.5 mt-2">
+        {[...byRole.entries()].map(([role, apps]) => {
+          const danger = role === "suspect" || role === "person_of_interest";
+          return (
+            <div key={role}>
+              <div className={
+                "text-[10px] uppercase tracking-wide font-semibold mb-0.5 " +
+                (danger ? "text-red-700" : "text-slate-600")
+              }>
+                {role.replace("_", " ")}
+              </div>
+              <ul className="space-y-0.5">
+                {apps.map((a) => (
+                  <li key={a.case_id}>
+                    <button
+                      type="button"
+                      onClick={() => setHashPath(`${ROUTES.casePrefix}${a.case_id}`)}
+                      className="text-left text-[11px] hover:underline"
+                    >
+                      <span className="font-mono text-slate-700">{a.case_number}</span>
+                      <span className="text-slate-500"> · </span>
+                      <span className="text-slate-900">{a.case_title}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          );
+        })}
+      </div>
+    </li>
+  );
+}
+
 
 // ── Primitives ──────────────────────────────────────────────────────────────
 

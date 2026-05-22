@@ -497,6 +497,36 @@ export async function getDashboardInsights(): Promise<DashboardInsights> {
   return data;
 }
 
+// ── Graph layer — cross-case role conflicts ────────────────────────────
+
+export interface CrossCaseConflictAppearance {
+  person_node_id: string;
+  case_id: string;
+  case_number: string;
+  case_title: string;
+  case_classification: string;
+  role: PersonRole;
+  name: string;
+  confidence: number;
+}
+
+export interface CrossCaseConflictHit {
+  person_id: string;
+  person_name: string;
+  appearances: CrossCaseConflictAppearance[];
+}
+
+export async function getCrossCaseConflicts(opts?: {
+  mine?: boolean;
+  minConfidence?: number;
+}): Promise<{ hits: CrossCaseConflictHit[] }> {
+  const params: Record<string, string | number | boolean> = {};
+  if (opts?.mine) params.mine = true;
+  if (opts?.minConfidence != null) params.min_confidence = opts.minConfidence;
+  const { data } = await http.get("/graph/cross-case-conflicts", { params });
+  return data;
+}
+
 export interface InferredMention {
   descriptor: string;
   role_hint: PersonRole;
