@@ -13,18 +13,19 @@
     "dev:backend": "cd server-py && ../.venv/bin/python __main__.py"
   },
   "dependencies": {
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
+    "@tanstack/react-query": "^5.60.0",
+    "@xyflow/react": "^12.10.2",
     "axios": "^1.7.0",
-    "@tanstack/react-query": "^5.60.0"
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "^4.0.0",
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.4.0",
     "tailwindcss": "^4.0.0",
-    "@tailwindcss/vite": "^4.0.0",
     "typescript": "~5.7.0",
     "vite": "^7.0.0"
   }

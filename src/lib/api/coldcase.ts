@@ -567,6 +567,47 @@ export async function revokePersonIdentityAssertion(
   });
 }
 
+// ── Graph layer — case neighborhood (for node-link viz) ────────────────
+
+export interface GraphNodeDTO {
+  id: string;
+  kind: "case" | "person" | "document" | "hypothesis" | "tag" | "timeline_event" | "passage";
+  label: string;
+  attrs: Record<string, unknown>;
+}
+
+export interface GraphEdgeDTO {
+  kind: string;
+  source: string;
+  target: string;
+  confidence: number;
+  provenance: string;
+  asserted_by: string;
+  asserted_at: string | null;
+  valid_from: string | null;
+  valid_to: string | null;
+  status: string;
+  disputed_by: string;
+  attrs: Record<string, unknown>;
+}
+
+export interface CaseNeighborhoodResp {
+  nodes: GraphNodeDTO[];
+  edges: GraphEdgeDTO[];
+  stats: Record<string, number>;
+}
+
+export async function getCaseNeighborhood(
+  caseId: string,
+  opts?: { depth?: number; minConfidence?: number },
+): Promise<CaseNeighborhoodResp> {
+  const params: Record<string, number> = {};
+  if (opts?.depth != null) params.depth = opts.depth;
+  if (opts?.minConfidence != null) params.min_confidence = opts.minConfidence;
+  const { data } = await http.get(`/graph/cases/${caseId}/neighborhood`, { params });
+  return data;
+}
+
 export async function getCrossCaseConflicts(opts?: {
   mine?: boolean;
   minConfidence?: number;

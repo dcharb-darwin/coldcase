@@ -30,6 +30,7 @@ import BriefTab from "../tabs/BriefTab";
 import PeopleTab from "../tabs/PeopleTab";
 import TimelineTab from "../tabs/TimelineTab";
 import HypothesisTab from "../tabs/HypothesisTab";
+import GraphTab from "../tabs/GraphTab";
 import ChainTab from "../tabs/ChainTab";
 import ReportDrawer from "../components/ReportDrawer";
 import { CaseTagBar, TagChip } from "../components/TagChips";
@@ -44,7 +45,7 @@ type DrawerState =
   | { kind: "closed" }
   | { kind: "promote"; sourceMessage: Message };
 
-type CaseTab = "brief" | "evidence" | "people" | "timeline" | "hypothesis" | "reports" | "chain" | "export";
+type CaseTab = "brief" | "evidence" | "people" | "timeline" | "hypothesis" | "graph" | "reports" | "chain" | "export";
 
 const CASE_TABS: { id: CaseTab; label: string; hint: string }[] = [
   { id: "brief",      label: "Brief",      hint: "Overview" },
@@ -52,6 +53,7 @@ const CASE_TABS: { id: CaseTab; label: string; hint: string }[] = [
   { id: "people",     label: "People",     hint: "Suspects · witnesses · victims" },
   { id: "timeline",   label: "Timeline",   hint: "Chronological case activity" },
   { id: "hypothesis", label: "Hypothesis", hint: "Brain dump → AI → investigation" },
+  { id: "graph",      label: "Graph",      hint: "Visual neighborhood" },
   { id: "reports",    label: "Reports",    hint: "Drafts + signed" },
   { id: "chain",      label: "Chain",      hint: "Per-case audit (§13663(c))" },
   { id: "export",     label: "Export",     hint: "Discovery + evidence.com" },
@@ -215,6 +217,9 @@ export default function CaseDetailPage({ caseId }: CaseDetailPageProps) {
           )}
           {activeTab === "hypothesis" && (
             <HypothesisTab caseId={caseId} />
+          )}
+          {activeTab === "graph" && (
+            <GraphTab caseId={caseId} />
           )}
           {activeTab === "reports" && (
             <ReportsTab
