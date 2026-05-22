@@ -611,10 +611,12 @@ export async function getCaseNeighborhood(
 export async function getCrossCaseConflicts(opts?: {
   mine?: boolean;
   minConfidence?: number;
+  caseId?: string;
 }): Promise<{ hits: CrossCaseConflictHit[] }> {
   const params: Record<string, string | number | boolean> = {};
   if (opts?.mine) params.mine = true;
   if (opts?.minConfidence != null) params.min_confidence = opts.minConfidence;
+  if (opts?.caseId) params.case_id = opts.caseId;
   const { data } = await http.get("/graph/cross-case-conflicts", { params });
   return data;
 }

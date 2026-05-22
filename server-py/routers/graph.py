@@ -116,16 +116,26 @@ def persons_shortest_path(
 def cross_case_conflicts(
     min_confidence: float = 0.4,
     mine: bool = False,
+    case_id: Optional[str] = None,
     user: CurrentUser = Depends(current_user),
 ):
     """Persons appearing on multiple cases under DIFFERENT roles.
-    `mine=true` scopes to cases where the caller is primary investigator."""
+
+    `mine=true` scopes to cases where the caller is primary investigator.
+    `case_id` (optional) further filters to hits that involve this case —
+    used by the People tab to surface conflicts in-context.
+    """
     svc = get_graph_service()
     hits = svc.cross_case_role_conflicts(
         user.tenant_id,
         min_confidence=max(0.0, min(min_confidence, 1.0)),
         primary_investigator_id=user.user_id if mine else None,
     )
+    if case_id:
+        hits = [
+            h for h in hits
+            if any(a.get("case_id") == case_id for a in h.appearances)
+        ]
     return {"hits": [h.to_dict() for h in hits]}
 
 

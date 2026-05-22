@@ -7,10 +7,12 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
-  acceptInferredMention, createPerson, deletePerson, getDuplicatePersons,
+  acceptInferredMention, assertPersonIdentity, createPerson, deletePerson,
+  getCrossCaseConflicts, getDuplicatePersons,
   getPersonMentions, getPersonNetwork, listPersons, mergePersons, searchPersons,
   suggestCasePersons, suggestInferredMentions,
-  type DuplicatePersonPair, type InferredMention, type Person, type PersonRole,
+  type CrossCaseConflictHit, type DuplicatePersonPair, type IdentityVerdict,
+  type InferredMention, type Person, type PersonRole,
   type PersonSuggestion,
 } from "@/lib/api/coldcase";
 import { ROUTES, setHashPath } from "@/shell/routes";
@@ -332,6 +334,7 @@ export default function PeopleTab({ caseId }: { caseId: string }) {
         <PersonSuggestions caseId={caseId} />
         <InferredMentions caseId={caseId} />
         <DuplicatePersonsBanner caseId={caseId} />
+        <CaseScopedConflictBanner caseId={caseId} />
 
 
         {adding ? (
@@ -717,6 +720,148 @@ function DuplicatePairRow({
           {pending ? "Merging…" : `Keep "${primary.name}", merge "${duplicate.name}"`}
         </button>
       </div>
+    </li>
+  );
+}
+
+
+// ── Per-case role-conflict banner ────────────────────────────────────────
+// Surfaces query 5 of the graph layer, scoped to THIS case. The dashboard
+// shows all conflicts across the caller's caseload; here the detective
+// sees conflicts that involve specifically this file — useful while
+// they're working it.
+
+function CaseScopedConflictBanner({ caseId }: { caseId: string }) {
+  const qc = useQueryClient();
+  const { data, isLoading } = useQuery({
+    queryKey: ["case-cross-conflicts", caseId],
+    queryFn: () => getCrossCaseConflicts({ caseId }),
+    staleTime: 30_000,
+  });
+
+  const assertMut = useMutation({
+    mutationFn: async (vars: { hit: CrossCaseConflictHit; verdict: IdentityVerdict }) => {
+      const ids = vars.hit.appearances.map((a) => a.person_node_id.replace(/^person:/, ""));
+      for (let i = 0; i < ids.length; i++) {
+        for (let j = i + 1; j < ids.length; j++) {
+          await assertPersonIdentity({
+            person_a_id: ids[i]!, person_b_id: ids[j]!,
+            verdict: vars.verdict,
+            rationale: vars.verdict === "same"
+              ? `Confirmed by case-level review (${vars.hit.appearances.length} appearances)`
+              : `Name coincidence per case-level review`,
+          });
+        }
+      }
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["case-cross-conflicts", caseId] });
+      qc.invalidateQueries({ queryKey: ["dashboard", "cross-case-conflicts"] });
+    },
+  });
+
+  const hits = data?.hits ?? [];
+  if (isLoading || hits.length === 0) return null;
+
+  return (
+    <section className="border border-amber-300 bg-amber-50/60 rounded p-3 mt-3">
+      <div className="flex items-baseline justify-between mb-1.5">
+        <h3 className="text-[12px] font-semibold text-amber-900">
+          Role conflicts involving this case ({hits.length})
+        </h3>
+        <span className="text-[11px] text-amber-800">
+          Same person, different role on another case
+        </span>
+      </div>
+      <p className="text-[11px] text-amber-800/80 mb-2">
+        Brady / credibility check before this case goes to the DA. Confirm or
+        dismiss to clear the flag — the verdict propagates to the dashboard.
+      </p>
+      <ul className="space-y-2">
+        {hits.map((h) => (
+          <CaseConflictRow
+            key={h.person_id}
+            hit={h}
+            pending={assertMut.isPending && assertMut.variables?.hit.person_id === h.person_id}
+            onAssert={(verdict) => assertMut.mutate({ hit: h, verdict })}
+          />
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+
+function CaseConflictRow({
+  hit, pending, onAssert,
+}: {
+  hit: CrossCaseConflictHit;
+  pending: boolean;
+  onAssert: (v: IdentityVerdict) => void;
+}) {
+  const plausibility = hit.plausibility_score;
+  const certain = plausibility >= 0.85;
+  const moderate = plausibility >= 0.5 && plausibility < 0.85;
+  const scoreCls = hit.contains_confirmed_same
+    ? "bg-emerald-100 text-emerald-800 border-emerald-300"
+    : certain
+      ? "bg-red-100 text-red-800 border-red-300"
+      : moderate
+        ? "bg-amber-100 text-amber-800 border-amber-300"
+        : "bg-slate-100 text-slate-600 border-slate-300";
+  const scoreLabel = hit.contains_confirmed_same
+    ? "Officer-confirmed"
+    : certain ? "Likely same" : moderate ? "Possibly same" : "May be coincidence";
+
+  return (
+    <li className="border border-amber-200 rounded p-2 bg-white">
+      <div className="flex items-baseline gap-2 flex-wrap">
+        <span className="text-sm font-semibold text-slate-900">{hit.person_name}</span>
+        <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full border text-[10px] ${scoreCls}`}>
+          {scoreLabel}
+        </span>
+        <div className="ml-auto flex gap-1 shrink-0">
+          <button
+            type="button"
+            disabled={pending}
+            onClick={() => onAssert("same")}
+            className="px-2 py-0.5 text-[11px] rounded border border-emerald-300 bg-white text-emerald-800 hover:bg-emerald-50 disabled:opacity-50"
+          >
+            {pending ? "Saving…" : "Confirm same"}
+          </button>
+          <button
+            type="button"
+            disabled={pending}
+            onClick={() => onAssert("different")}
+            className="px-2 py-0.5 text-[11px] rounded border border-slate-300 bg-white text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+          >
+            Mark different
+          </button>
+        </div>
+      </div>
+      {hit.implausibility_reasons.length > 0 ? (
+        <div className="text-[11px] text-slate-600 italic mt-1 pl-2 border-l-2 border-amber-200">
+          {hit.implausibility_reasons.join(" · ")}
+        </div>
+      ) : null}
+      <ul className="space-y-0.5 mt-1.5">
+        {hit.appearances.map((a) => {
+          const danger = a.role === "suspect" || a.role === "person_of_interest";
+          return (
+            <li key={a.case_id} className="text-[11px]">
+              <span className={
+                "inline-block w-32 uppercase tracking-wide text-[10px] font-semibold " +
+                (danger ? "text-red-700" : "text-slate-600")
+              }>
+                {a.role.replace("_", " ")}
+              </span>
+              <span className="font-mono text-slate-700">{a.case_number}</span>
+              <span className="text-slate-500"> · </span>
+              <span className="text-slate-900">{a.case_title}</span>
+            </li>
+          );
+        })}
+      </ul>
     </li>
   );
 }
