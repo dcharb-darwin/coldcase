@@ -18,3 +18,8 @@ pypdf>=4.0.0,<7.0.0
 pymupdf>=1.24,<2.0
 pytesseract>=0.3.10,<0.4
 Pillow>=10,<12
+# Graph layer: derived multi-dimensional graph view over Mongo
+# (per docs/design/graph-layer.md). Default in-memory backend uses
+# NetworkX. Swappable behind GraphService Protocol once a tenant
+# outgrows the in-memory ceiling.
+networkx>=3.2,<4
