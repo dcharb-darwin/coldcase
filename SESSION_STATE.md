@@ -1,7 +1,7 @@
 # Session State — Cold Case
 
-**Last Updated:** 2026-05-20
-**Last Session:** Single-day pass: §13663 hardening + Phase A workspace + Phase B tags + Phase C AI extraction + hash-chained audit integrity + AI provenance + graph (1-hop, 2-hop, similar cases, document mentions) + CaseDetailPage refactor (2,648 → 936 lines via Brief/People/Timeline/Chain tab extraction). 15 commits, all pushed to `origin/main`.
+**Last Updated:** 2026-05-22
+**Last Session:** Multi-day continuation. Refactored CaseDetailPage 2,648 → 936 lines (tab extraction). Shipped multi-agent hypothesis flow (generator + de-novo + red-team) with closed-vocab bias flags. Added voice-capture brain dumps + Whisper-style transcription seam. Built graph service spine with NetworkX backend, four-dimensional edges (confidence / provenance / temporal / trust), plausibility scoring, officer identity-assertion override, node-link viz, and per-case + dashboard conflict panels. 26 commits, all on `origin/main`.
 
 ## Git identity + remote
 
@@ -24,78 +24,109 @@ Live URLs:
 
 Key endpoints to sanity-check the stack:
 - `GET /launchpad/coldcase/api/admin/compliance/preflight` — 7-check report, `ready: true` when all pass
-- `GET /launchpad/coldcase/api/admin/compliance/audit-chain` — full chain verification
+- `GET /launchpad/coldcase/api/graph/stats` — graph layer sizing (node/edge counts by kind)
+- `GET /launchpad/coldcase/api/graph/cross-case-conflicts?mine=true` — Brady-risk conflicts after plausibility filtering
+- `POST /launchpad/coldcase/api/demo/seed-plausibility` — synthetic test dataset (SYNTH-* cases)
 - `bash scripts/compliance-smoke.sh` — 12-assertion end-to-end smoke
 
-## What shipped this session (11 commits on `main`)
+## What shipped this session (26 commits)
 
-| Commit | Theme |
-|---|---|
-| `4526479` | Phase A workspace shell (tabbed Brief/Evidence/Reports/Chain/Export) + §13663 hardening (preflight, retention scheduler, first-draft mutation deny, agency policy template + vendor data-handling clause + compliance status doc) + evidence.com data-readiness schema (Case/Doc/Media/Report external_id, agency_ori_snapshot, date_of_incident) |
-| `7baeb61` | Phase C AI extraction: tag suggestions, person extraction, timeline-event extraction + polish (cross-route citation jump, report-subject tags, dashboard tag filter) |
-| `8a4ba30` | Real hash-chained audit integrity — `sequence` + `prev_event_hash` + `event_hash` on every AuditEvent. Tamper-detection verified live |
-| `67cf9bb` | Chain integrity card on Chain tab · Notes artifact (freeform detective scratch) · cross-case Person "↗ N other cases" chip |
-| `68e8c2f` | State-aware Investigative-steps suggester on Brief tab (reads case docs + people + reports + tags + timeline) |
-| `e36e991` | Formal AI provenance (`Provenance` embedded doc reused on Person + TagAssignment + audit events) + Case Connections graph (1-hop) |
-| `d904b59` | Two-hop co-occurrence network ("who does this person share cases with") |
-| `d52564c` | Similar cases (Jaccard over tags) + document mention finder (Person → exact doc + line) |
-| `(this commit)` | Documentation consolidation: README rewrite + STRUCTURE update + SESSION_STATE refresh + PRD changelog |
+| # | Commit | Theme |
+|---|---|---|
+| 1 | `562aa3c` | refactor: extract PeopleTab from 2,648-line CaseDetailPage |
+| 2 | `b549538` | refactor: extract BriefTab |
+| 3 | `23acd9a` | refactor: extract TimelineTab |
+| 4 | `2c6aba2` | refactor: extract ChainTab — orchestrator now under 1k lines |
+| 5 | `fa28de7` | docs: tabs/ directory in STRUCTURE + SESSION_STATE |
+| 6 | `fd8c896` | feat: dashboard cross-case insights panel |
+| 7 | `7dbb799` | feat: AI extraction of unnamed references (Phase C closure) |
+| 8 | `74c3e78` | fix: Save clue + Refresh UX (cards remove + emerald banner) |
+| 9 | `6259912` | feat: likely-duplicate Person detection + merge |
+| 10 | `2a8cc6d` | feat: brain-dump → AI hypothesis (Phase 0 + 1) |
+| 11 | `1e9a97e` | feat: voice capture + audio upload + transcription seam (Phase 2) |
+| 12 | `6331a4c` | docs: multi-agent hypothesis design doc |
+| 13 | `8b2ae35` | feat: multi-agent — de-novo + red-team (v0.11.0) |
+| 14 | `858b7ea` | feat: threaded notes (notes-on-notes) |
+| 15 | `0b54451` | docs: graph layer design doc |
+| 16 | `1197e8a` | feat: GraphService spine + NetworkX backend (v0.12.0) |
+| 17 | `f99eb4d` | feat: dashboard cross-case role conflicts panel |
+| 18 | `fb6876a` | feat: same-person plausibility scoring (3-signal composite) |
+| 19 | `be5fbf5` | feat: synthetic plausibility-demo dataset + tightened cross-state penalty |
+| 20 | `f1d2317` | feat: officer identity assertions (confirm same / mark different) |
+| 21 | `91bda42` | feat: node-link graph visualization (9th tab, react-flow) |
+| 22 | `27df840` | feat: per-case role-conflict panel on People tab |
 
 ## Current state — feature map
 
 **Compliance backbone (§13663):**
-- 7-check preflight at `/admin/compliance/preflight`
-- Retention scheduler running daily (in-process asyncio task, `services/retention_scheduler.py`)
-- First-AI-draft mutation deny + audit event
-- Real hash-chained audit (715+ events on the live chain, 0 breaks, tamper-detection verified)
-- Agency policy template (880 lines) + vendor data-handling clause + compliance status doc
-- AI provenance on Person + TagAssignment + dedicated `*_ACCEPTED_FROM_AI` audit events
+- 7-check preflight, retention scheduler, first-AI-draft mutation deny, hash-chained audit (28+ event types)
+- Agency policy template + vendor data-handling clause + compliance status doc
+- AI provenance on Person + TagAssignment + Hypothesis + dedicated `*_ACCEPTED_FROM_AI` audit events
 
-**Detective workspace (7 tabs + persistent chat):**
-- Brief — stat cards · suggested next step (rule-based + AI investigative steps) · key dates · investigators · Connections (1-hop + 2-hop expand) · Similar cases (Jaccard) · grouped tags · AI tag suggester · Notes
-- Evidence — docs + media + per-document tags + citation jump
-- People — role-grouped persons with cross-case chip + mention finder (substring scan with variant matching)
-- Timeline — manual + AI-extracted case events (colored dots by source) + activity log grouped by day
-- Reports — list → full-route 3-column workspace with per-report tagging
-- Chain — live integrity card + per-report chain cards + case audit manifest PDF
-- Export — discovery package + evidence.com data-readiness preview
+**Detective workspace (9 tabs + persistent chat):**
+- **Brief** — stat cards · suggested next step (rule + AI) · key dates · connections · similar cases · grouped tags · AI tag suggester · threaded notes
+- **Evidence** — docs + media + per-doc tags + citation jump
+- **People** — role-grouped persons · AI extraction · cross-case lookup · mention finder · duplicate-merge banner · **per-case role-conflict banner**
+- **Timeline** — manual + AI-extracted events + activity log
+- **Hypothesis** — voice/upload/typed brain dump · multi-agent (generator + de-novo + red-team) · accept-each-individually · cross-check
+- **Graph** *(new)* — react-flow node-link view of case neighborhood · confidence + depth sliders · pan/zoom/minimap
+- **Reports** — list → full-route 3-column workspace
+- **Chain** — live integrity card + per-report chain + case audit manifest PDF
+- **Export** — discovery package + evidence.com data-readiness preview
 
-**AI surfaces** (all closed-vocab / grounded / accept-each-individually):
-- Tag suggestions (vocab-constrained, can't invent slugs)
-- Person extraction (with provenance + rationale)
-- Timeline event extraction (date + label + source doc)
-- Next investigative steps (state-aware — reads case state, not just doc text)
+**Graph layer (v0.12.0):**
+- `services/graph/` package — interface + types + loader + NetworkX backend + backend factory
+- Six query methods: case neighborhood, person across cases, person network, shortest path, cross-case role conflicts, stats
+- Four edge dimensions on every edge: confidence (5-bucket vocab), provenance (8 sources), temporal (valid_from/to), trust (current/disputed/superseded)
+- 60s TTL in-memory cache, invalidate on write
+- Plausibility scorer (temporal × agency × distinctiveness) composes confidence on SAME_NAME_AS edges
+- Officer identity assertions override the heuristic — CONFIRMED_SAME_PERSON_AS / CONFIRMED_DIFFERENT_PERSON_AS edges at 1.0 confidence
+- Union-find clustering with assertion overrides (force-connect same / break different)
+- Backend swap is one env var (`GRAPH_BACKEND=neo4j`); spine doesn't change
 
-**Cross-case graph** (all derived, no new persistence):
-- "Where else does this name appear?" (1-hop)
-- Two-hop co-occurrence network ("who does this person know?")
-- Tag-based similar cases (Jaccard)
-- Document mention finder (substring scan with honorific/surname variants)
+**Multi-agent hypothesis (v0.11.0):**
+- Three agents: `generator` (brain-dump → hypotheses), `de_novo_generator` (case docs only), `red_team` (attacks one hypothesis)
+- `services/bias_vocab.py` — closed 9-slug vocabulary so LLM can't invent flags
+- HypothesisOrigin enum (human_typed / ai_from_braindump / ai_de_novo / ai_alternative) with parent linkage
+- BrainDump model carrying audio_artifact_uri + transcript + provider lineage
+
+**Synthetic dataset:**
+- `seed/plausibility_demo.py` — 7 SYNTH-prefixed cases (KY 1985-2015, IN 1955, SC 2010), 19 persons, 2 hypotheses, 7 tag assignments
+- Designed to exercise every plausibility branch: high (Marcus Webb 0.86), moderate (Diana Reeves 0.62), weak (John Williams 0.36 → can be Mark-different'd away), and coincidental cross-state/decade matches that are correctly hidden
+- POST/DELETE `/demo/seed-plausibility` for idempotent seed + wipe
 
 ## Open / deferred work
 
-- **evidence.com integration** (auth + push) — deferred. Data is shape-ready per `docs/design/workflow-and-ux.md §13`. When the agency provides Entra app + token model, the implementation is one new provider + ~10 lines of glue in `report_export.py`.
-- **Real GCC Copilot provider** — stub in `providers/llm.py`. Awaits agency Entra app.
-- **Person-mention extraction via AI** — substring finder is deterministic and works. AI mention extraction (broader than literal name match — pronouns, descriptions) would be a further Phase C step.
-- **Visual node-link graph** — text-list Connections + Similar Cases panels are sufficient at current data volume. Worth revisiting when a tenant accumulates 10+ cross-case overlaps per case.
-- **Per-doc + per-report Notes UI** — backend supports it; UI surfaces case-scope today (NotesPanel is scope-agnostic — zero-code addition when the UX calls for it).
-- **PRD §12 test-case statuses** — should bump from ⏳ to ✅ where this session closed them (especially #2 — first-draft mutation 403).
+- **Document chunking** — Passage as first-class node per `graph-layer.md`. Opens query 7 (mention cluster) + bigger-cases storyline.
+- **Mongo `$graphLookup` backend** — for tenants past the in-memory ceiling (~100k nodes). Triggered when build time exceeds 5s.
+- **Neo4j read replica** — for million-node tenants with heavy multi-hop pattern matching. Triggered only on real load.
+- **Hypothesis events on Timeline tab** — surface status changes + red-team runs in chronological view.
+- **Per-tenant bias-flag vocabulary override** — currently hard-coded in `bias_vocab.py`. Wait for a tenant ask.
+- **Real GCC Copilot provider** — stub in `providers/llm.py`. Waits on agency Entra app.
+- **Local Whisper transcription provider** — stub at `providers/transcription.py`. Wire `faster-whisper` once agency picks an on-prem model.
+- **evidence.com integration** — auth + push deferred per user. Data shape is ready.
+- **PRD §12 test-case statuses** — bump as features close.
 
 ## What to do at the start of the next session
 
-1. Read this file + `docs/legal/compliance-status.md` (current statute posture).
-2. `./dev.sh` (or `docker compose up -d` if you're sure the volumes are intact).
+1. Read this file + `docs/legal/compliance-status.md` (current statute posture) + `docs/design/graph-layer.md` + `docs/design/hypothesis-agents.md`.
+2. `./dev.sh` (or `docker compose up -d` if the volumes are intact).
 3. `bash scripts/compliance-smoke.sh` → expect 🟢 all assertions passed.
-4. Hit `/admin/compliance/preflight` and `/admin/compliance/audit-chain` to confirm chain integrity.
-5. Pick the next thread from the "Open / deferred work" section above, or whatever the agency sponsor surfaces.
+4. `POST /demo/seed-plausibility` → populate the synthetic dataset to exercise the graph layer.
+5. Hit `/graph/stats`, `/graph/cross-case-conflicts?mine=true`, the dashboard, and a case's Graph tab to confirm everything renders.
+6. Pick the next thread from the "Open / deferred work" section.
 
 ## Hard-won lessons from this session
 
-- **Tailwind v4 cascade trap:** the kit's `* { padding: 0 }` reset (and the `a { color: var(--color-primary) }` link rule) silently kill Tailwind utilities because v4 wraps them in `:where()` — same specificity loses on source order. Fix: wrap all bare-element rules in `@layer base`. This affects every Launchpad app — port the fix upstream.
-- **BSON datetime precision:** `datetime.utcnow()` returns microseconds; MongoDB stores milliseconds. Any hash that includes a timestamp must truncate to ms precision at hash-time, or write-time hashes won't match read-time hashes. (Caught in `services/audit_chain.py`.)
-- **Provenance is not the same as notes:** stuffing "Suggested by AI · …" into a detective-editable field looks fine until the detective edits the field and the lineage is lost. Provenance belongs in its own embedded doc with `source`, `model`, `rationale`, `accepted_by`, `accepted_at`.
-- **Closed vocabulary matters for AI suggesters:** if the LLM can invent new tag slugs, the city attorney can't filter on them years later. Constrain the prompt to "only return slugs from this list" and validate the response against the same list.
-- **Substring matching beats AI for literal name lookup:** document mention finder is deterministic, fast, and doesn't generate an audit event. Reserve the LLM for inference (who is mentioned that isn't named explicitly) — not for literal text search.
+- **`networkx.shortest_simple_paths` rejects MultiGraph.** Fold parallel edges to a plain Graph (keep best confidence per pair) before path-finding. The MultiDiGraph stores the original edges; the path-finding view is a flattened projection.
+- **Cross-state penalty must be sharp enough to never bridge clusters via union-find.** A 0.3 penalty × 1.0 temporal × 1.0 distinctiveness = 0.30, which sneaks through a 0.25 threshold. Hardened to 0.15.
+- **Build the dimensions before you can use them.** Shipped a four-dimensional edge model in the design doc but had the loader emit flat WEAK confidence everywhere — caught only after the user pointed at a 47-year cross-state false positive. Lesson: when you build a "multidimensional" model, write data-validation tests that ensure each dimension actually varies in production.
+- **Hash-routed SPA doesn't re-render on hash change to the same path.** Two-step navigate (`/` then target hash) when changing case_id programmatically.
+- **Synthetic data exposes bugs design review can't.** The plausibility scorer looked fine on the demo data because the demo had only 3 cases. Adding 7 carefully-designed synthetic cases immediately surfaced the cross-state-penalty hole. Build the dataset BEFORE shipping the filter.
+- **TagAssignment uses `applied_by/applied_at`**, not `assigned_by/assigned_at`. Bit me when adding the loader.
+- **`shortest_simple_paths` raises both `NetworkXNoPath` AND `NodeNotFound`** — catch both, return empty list.
+- **react-flow's `@xyflow/react` package** (the maintained one, not the deprecated `reactflow`) is ~80KB gzipped and pulls in d3-* deps. Worth the cost for one viz; consider dynamic import if a second route doesn't need it.
+- **Officer override edges (CONFIRMED_SAME / CONFIRMED_DIFFERENT) belong in the graph itself**, not in a filter on top. Let the union-find see them at clustering time — clean, no special-case branches.
 
 ## Worktree workflow (unchanged)
 
