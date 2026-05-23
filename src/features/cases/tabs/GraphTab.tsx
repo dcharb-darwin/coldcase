@@ -1,13 +1,9 @@
 // Node-link visualization of the case's graph neighborhood.
 //
-// Reads from /graph/cases/{id}/neighborhood (the new GraphService spine).
+// Reads from /graph/cases/{id}/neighborhood (the GraphService spine).
 // Confidence slider filters weak edges; depth slider widens the view.
-// Color coding by node kind; edge width scales with confidence.
-//
-// Layout: simple polar arrangement — the case in the center, neighbors
-// grouped in concentric rings by kind. Avoids the dependency + complexity
-// of a real force-directed simulation while keeping the picture readable
-// for the typical 10-30 node case neighborhoods.
+// First-time orientation: an expandable "How to read this" panel above
+// the canvas explains the colors, edges, and the queries this enables.
 
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -22,7 +18,8 @@ import { ROUTES, setHashPath } from "@/shell/routes";
 
 
 const NODE_FILL: Record<string, string> = {
-  case: "#1e40af",         // blue-800 — the focal case
+  case: "#1e3a8a",         // blue-900 — other cases
+  case_focal: "#f59e0b",   // amber-500 — the focal case is visually distinct
   person: "#7c2d12",       // orange-900
   document: "#065f46",     // emerald-800
   hypothesis: "#6b21a8",   // purple-800
@@ -30,7 +27,18 @@ const NODE_FILL: Record<string, string> = {
   timeline_event: "#9a3412",
   passage: "#52525b",
 };
-const NODE_TEXT_LIGHT = "#ffffff";
+
+
+const NODE_KIND_LABEL: Record<string, string> = {
+  case: "Other case",
+  person: "Person",
+  document: "Document",
+  hypothesis: "Hypothesis",
+  tag: "Tag",
+  timeline_event: "Timeline event",
+  passage: "Document passage",
+};
+
 
 const EDGE_COLOR: Record<string, string> = {
   appears_on_case: "#1f2937",
@@ -48,12 +56,13 @@ const EDGE_COLOR: Record<string, string> = {
 
 
 export default function GraphTab({ caseId }: { caseId: string }) {
-  const [depth, setDepth] = useState(2);
+  const [depth, setDepth] = useState(1);                  // start tight to reduce visual clutter
   const [minConfidence, setMinConfidence] = useState(0.4);
   const [includeWeak, setIncludeWeak] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
 
   const { data, isLoading, error } = useQuery({
-    queryKey: ["case-neighborhood", caseId, depth, minConfidence],
+    queryKey: ["case-neighborhood", caseId, depth, minConfidence, includeWeak],
     queryFn: () => getCaseNeighborhood(caseId, {
       depth, minConfidence: includeWeak ? 0 : minConfidence,
     }),
@@ -72,8 +81,16 @@ export default function GraphTab({ caseId }: { caseId: string }) {
           <div>
             <h2 className="text-[15px] font-semibold text-slate-900">Graph</h2>
             <p className="text-xs text-slate-500">
-              Case neighborhood — persons, documents, hypotheses, tags. Drag to
-              pan, scroll to zoom. Confidence + depth controls filter the view.
+              Everything connected to this case — people, documents, hypotheses, tags.
+              Drag to pan, scroll to zoom. The amber-bordered node in the centre is
+              this case;{" "}
+              <button
+                type="button"
+                onClick={() => setHelpOpen((v) => !v)}
+                className="text-blue-700 hover:underline"
+              >
+                {helpOpen ? "hide" : "what should I use this for?"}
+              </button>
             </p>
           </div>
           <div className="flex items-center gap-4 text-[11px]">
@@ -116,7 +133,10 @@ export default function GraphTab({ caseId }: { caseId: string }) {
             )) : null}
           </div>
         ) : null}
+
+        {helpOpen ? <HelpPanel /> : null}
       </header>
+
       <div className="flex-1 relative bg-slate-50">
         {isLoading ? (
           <div className="p-6 text-xs text-slate-500">Loading graph…</div>
@@ -127,19 +147,22 @@ export default function GraphTab({ caseId }: { caseId: string }) {
             Empty neighborhood. Add persons, documents, or hypotheses to this case.
           </div>
         ) : (
-          <ReactFlow
-            nodes={nodes}
-            edges={edges}
-            fitView
-            onNodeClick={(_, n) => onNodeClick(n)}
-            nodesDraggable
-            panOnDrag
-            zoomOnScroll
-          >
-            <Background />
-            <Controls />
-            <MiniMap pannable zoomable />
-          </ReactFlow>
+          <>
+            <ReactFlow
+              nodes={nodes}
+              edges={edges}
+              fitView
+              onNodeClick={(_, n) => onNodeClick(n)}
+              nodesDraggable
+              panOnDrag
+              zoomOnScroll
+            >
+              <Background />
+              <Controls />
+              <MiniMap pannable zoomable />
+            </ReactFlow>
+            <Legend />
+          </>
         )}
       </div>
     </div>
@@ -147,13 +170,112 @@ export default function GraphTab({ caseId }: { caseId: string }) {
 }
 
 
+// ── Floating legend overlay ──────────────────────────────────────────────
+
+function Legend() {
+  // Visible bottom-right; collapsible so it doesn't fight the minimap.
+  const [open, setOpen] = useState(true);
+  return (
+    <div className="absolute top-3 right-3 max-w-xs bg-white border border-slate-300 rounded shadow-sm text-[11px] pointer-events-auto">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full px-2.5 py-1 flex items-center justify-between hover:bg-slate-50"
+      >
+        <span className="font-semibold text-slate-800">Legend</span>
+        <span className="text-slate-500">{open ? "−" : "+"}</span>
+      </button>
+      {open ? (
+        <div className="px-2.5 pb-2 space-y-1.5 border-t border-slate-200 pt-1.5">
+          <div className="text-[10px] uppercase tracking-wide text-slate-500">Nodes</div>
+          {([
+            ["case_focal", "This case"],
+            ["case", "Other case"],
+            ["person", "Person"],
+            ["document", "Document"],
+            ["hypothesis", "Hypothesis"],
+            ["tag", "Tag"],
+            ["timeline_event", "Timeline event"],
+          ] as const).map(([kind, label]) => (
+            <div key={kind} className="flex items-center gap-2">
+              <span className="inline-block w-4 h-3 rounded" style={{ background: NODE_FILL[kind] ?? "#475569" }} />
+              <span className="text-slate-700">{label}</span>
+            </div>
+          ))}
+          <div className="text-[10px] uppercase tracking-wide text-slate-500 mt-2">Edges</div>
+          <div className="text-[10px] text-slate-600 leading-snug">
+            Thickness + opacity scale with confidence (0–100%). Animated green edges
+            are officer-confirmed same-person assertions. Yellow edges are weak
+            name matches.
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+
+// ── Help panel: what is this + why it matters + how to use ────────────────
+
+function HelpPanel() {
+  return (
+    <div className="bg-blue-50/60 border border-blue-200 rounded p-3 mt-2 text-xs leading-relaxed">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div>
+          <div className="text-[10px] uppercase tracking-wide text-blue-900 font-semibold mb-1">
+            What you're looking at
+          </div>
+          <p className="text-slate-700">
+            A picture of <b>everything related to this case</b> — every person, document,
+            hypothesis, tag, timeline event, plus any <i>other cases</i> these things touch.
+            The amber-bordered node in the centre is this case. Lines connect things that
+            relate.
+          </p>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-wide text-blue-900 font-semibold mb-1">
+            Why it's useful
+          </div>
+          <ul className="text-slate-700 space-y-1 list-disc list-outside ml-4">
+            <li>Spot a person who shows up on two different cases at a glance</li>
+            <li>See which documents support which hypotheses</li>
+            <li>Catch shared evidence patterns across cases (yellow weak-match edges)</li>
+            <li>Verify the file's structure before discovery — "are all the dots connected?"</li>
+          </ul>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-wide text-blue-900 font-semibold mb-1">
+            How to use
+          </div>
+          <ul className="text-slate-700 space-y-1 list-disc list-outside ml-4">
+            <li><b>Click a case</b> to open it</li>
+            <li><b>Click a person</b> to see every case they appear on</li>
+            <li><b>Drag</b> to pan; <b>scroll</b> to zoom</li>
+            <li><b>Min confidence</b> slider hides weak / speculative edges. Lower it to
+              surface tentative connections; raise it to see only confirmed ones.</li>
+            <li><b>Depth</b> widens the view — 1 = direct connections only, 3 = neighbors-of-neighbors</li>
+          </ul>
+        </div>
+      </div>
+      <p className="text-[11px] text-slate-600 mt-3 pt-2 border-t border-blue-200">
+        <b>Tip:</b> if the picture feels crowded, drop Depth to 1 and raise Min confidence
+        to 0.7 — you'll see only the strongest direct connections. Then explore outward.
+      </p>
+    </div>
+  );
+}
+
+
 function onNodeClick(node: Node) {
-  // Cases → open the case workspace. Other kinds → no-op (could open a
-  // detail drawer in a follow-up).
+  // Cases → open the case workspace. Persons → switch to People tab where
+  // the cross-case lookup lives. Other kinds → no-op for now (could open
+  // a detail drawer in a follow-up).
   const kind = (node.data as { kind?: string } | undefined)?.kind;
   const rawId = (node.data as { rawId?: string } | undefined)?.rawId;
   if (kind === "case" && rawId) {
     setHashPath(`${ROUTES.casePrefix}${rawId}`);
+  } else if (kind === "case_focal" && rawId) {
+    // Already on this case — gentle no-op.
   }
 }
 
@@ -181,15 +303,15 @@ function buildLayout(
   }
 
   // Concentric placement. Each kind gets its own ring radius so the
-  // categories read at a glance.
+  // categories read at a glance. Wider rings so labels don't overlap.
   const radiusByKind: Record<string, number> = {
-    person: 180,
-    document: 280,
-    hypothesis: 360,
-    tag: 440,
-    timeline_event: 520,
-    passage: 600,
-    case: 200, // other cases (not focal) — close-ish
+    person: 240,
+    document: 380,
+    hypothesis: 500,
+    tag: 620,
+    timeline_event: 720,
+    passage: 820,
+    case: 280, // other cases — close-ish but distinguishable
   };
 
   const startAngleByKind: Record<string, number> = {
@@ -204,18 +326,18 @@ function buildLayout(
 
   const nodes: Node[] = [];
 
-  // Focal node — centered.
+  // Focal node — centered. Bigger and amber so it pops.
   if (focal) {
     nodes.push({
       id: focal.id,
       type: "default",
       position: { x: 0, y: 0 },
       data: {
-        label: shortLabel(focal),
-        kind: focal.kind,
+        label: focal.attrs?.case_number || focal.label,
+        kind: "case_focal",
         rawId: rawIdFromGraphId(focal.id),
       },
-      style: nodeStyle(focal.kind, true),
+      style: focalNodeStyle(),
     });
   }
 
@@ -223,8 +345,9 @@ function buildLayout(
   for (const [kind, list] of buckets.entries()) {
     const radius = radiusByKind[kind] ?? 300;
     const baseAngle = startAngleByKind[kind] ?? 0;
-    const sweep = Math.min(Math.PI * 1.6, Math.max(Math.PI / 2, list.length * 0.35));
-    const step = sweep / Math.max(1, list.length - 1);
+    // Wider sweep when many nodes so labels don't pile up.
+    const sweep = Math.min(Math.PI * 1.8, Math.max(Math.PI / 2, list.length * 0.5));
+    const step = list.length === 1 ? 0 : sweep / (list.length - 1);
     list.forEach((n, i) => {
       const angle = baseAngle + (list.length === 1 ? 0 : i * step - sweep / 2);
       nodes.push({
@@ -239,7 +362,7 @@ function buildLayout(
           kind: n.kind,
           rawId: rawIdFromGraphId(n.id),
         },
-        style: nodeStyle(n.kind, false),
+        style: nodeStyle(n.kind),
       });
     });
   }
@@ -265,16 +388,32 @@ function buildLayout(
 }
 
 
-function nodeStyle(kind: string, isFocal: boolean): React.CSSProperties {
+function focalNodeStyle(): React.CSSProperties {
+  return {
+    background: NODE_FILL.case_focal,
+    color: "#1f2937",
+    border: "3px solid #b45309",
+    borderRadius: 10,
+    padding: 10,
+    fontSize: 13,
+    fontWeight: 700,
+    width: 200,
+    textAlign: "center",
+    boxShadow: "0 0 0 4px rgba(245, 158, 11, 0.2)",
+  };
+}
+
+
+function nodeStyle(kind: string): React.CSSProperties {
   const fill = NODE_FILL[kind] ?? "#475569";
   return {
     background: fill,
-    color: NODE_TEXT_LIGHT,
-    border: isFocal ? "3px solid #fbbf24" : "1px solid rgba(0,0,0,0.2)",
+    color: "#ffffff",
+    border: "1px solid rgba(0,0,0,0.2)",
     borderRadius: 8,
     padding: 6,
     fontSize: 11,
-    fontWeight: isFocal ? 600 : 500,
+    fontWeight: 500,
     width: 160,
     textAlign: "center",
   };
@@ -292,3 +431,8 @@ function rawIdFromGraphId(graphId: string): string {
   const idx = graphId.indexOf(":");
   return idx >= 0 ? graphId.slice(idx + 1) : graphId;
 }
+
+
+// `NODE_KIND_LABEL` is exported in spirit through the Legend component; the
+// const is kept to document the kind → label mapping in one place.
+export { NODE_KIND_LABEL };
